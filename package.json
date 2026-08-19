@@ -1,0 +1,16 @@
+{
+  "name": "reward-bot",
+  "version": "1.0.0",
+  "description": "Discord reward, engagement, invite tracking, ticket, announcement, and scheduling bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "deploy": "node deploy-commands.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "mongoose": "^8.4.0",
+    "dotenv": "^16.4.5",
+    "node-cron": "^3.0.3"
+  }
+}
