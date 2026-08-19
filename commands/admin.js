@@ -22,6 +22,7 @@ module.exports = {
         { name: 'Roles', value: `Admin: ${config.adminRoleId ? `<@&${config.adminRoleId}>` : 'Not set'}\nStaff: ${config.staffRoleId ? `<@&${config.staffRoleId}>` : 'Not set'}\nVerified: ${config.verifiedRoleId ? `<@&${config.verifiedRoleId}>` : 'Not set'}`, inline: true },
         { name: 'Announce Channel', value: config.chatAnnounceChannelId ? `<#${config.chatAnnounceChannelId}>` : 'Not set', inline: true },
         { name: 'Public Invite Announce', value: config.publicInviteAnnounce ? 'Enabled ✅' : 'Disabled ❌', inline: true },
+        { name: 'Engagement Start', value: config.chatTrackingStartAt ? `${new Date(config.chatTrackingStartAt).toUTCString()}` : 'Immediate (no restriction)', inline: true },
       );
 
     const row1 = new ActionRowBuilder().addComponents(
@@ -33,6 +34,8 @@ module.exports = {
       new ButtonBuilder().setCustomId('admin_set_announce_channel').setLabel('📢 Announce Channel').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('admin_toggle_public_invite').setLabel('🔁 Toggle Public Invite Announce').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('admin_config').setLabel('🔧 Server Roles').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('admin_chat_start').setLabel('⏱️ Set Engagement Start').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('admin_add_credits').setLabel('➕ Add Invite Credits').setStyle(ButtonStyle.Secondary),
     );
     const row3 = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('admin_leaderboard').setLabel('📊 Publish Invite Leaderboard').setStyle(ButtonStyle.Secondary),

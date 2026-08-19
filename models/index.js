@@ -9,6 +9,7 @@ const ServerConfigSchema = new mongoose.Schema({
   ticketCategoryId: String,
   approvedChannelIds: { type: [String], default: [] }, // empty = all channels count
   chatAnnounceChannelId: String,                        // where weekly/monthly winners are announced
+  chatTrackingStartAt: { type: Date, default: null },   // messages before this time don't count (avoids a broken partial week)
   publicInviteAnnounce: { type: Boolean, default: false }, // invite claims stay private unless enabled
   weeklyMinMessages: { type: Number, default: 100 },
   monthlyMinMessages: { type: Number, default: 400 },

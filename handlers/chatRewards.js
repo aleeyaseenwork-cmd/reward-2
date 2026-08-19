@@ -80,6 +80,9 @@ async function runWeeklyChatRewards(client) {
   for (const guild of client.guilds.cache.values()) {
     try {
       const config = await ServerConfig.findOne({ guildId: guild.id }) || {};
+      if (config.chatTrackingStartAt && new Date() < new Date(config.chatTrackingStartAt)) {
+        continue; // engagement hasn't officially started for this guild yet
+      }
       const minMessages = config.weeklyMinMessages ?? 100;
       const rewardLabel = config.weeklyReward || '$5 USDT or $5 Discord Nitro';
 
@@ -117,6 +120,9 @@ async function runMonthlyChatRewards(client) {
   for (const guild of client.guilds.cache.values()) {
     try {
       const config = await ServerConfig.findOne({ guildId: guild.id }) || {};
+      if (config.chatTrackingStartAt && new Date() < new Date(config.chatTrackingStartAt)) {
+        continue; // engagement hasn't officially started for this guild yet
+      }
       const minMessages = config.monthlyMinMessages ?? 400;
       const rewardLabel = config.monthlyReward || '$20 USDT or $20 Discord Nitro';
 

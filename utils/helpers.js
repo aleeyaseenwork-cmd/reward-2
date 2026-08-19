@@ -89,8 +89,40 @@ function daysBetween(a, b) {
   return (new Date(b).getTime() - new Date(a).getTime()) / (1000 * 60 * 60 * 24);
 }
 
+// The next upcoming Monday 00:00:00 UTC (i.e. the next weekly reset).
+function nextMonday(now = new Date()) {
+  const day = now.getUTCDay();
+  const daysUntilMonday = day === 1 ? 7 : ((8 - day) % 7 || 7);
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + daysUntilMonday));
+}
+
+// The 1st of next month, 00:00:00 UTC (i.e. the next monthly reset).
+function nextMonthStart(now = new Date()) {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+}
+
+// Formats a date in US Eastern Time, since the client wants US timezone shown.
+function formatUSTime(date) {
+  return new Date(date).toLocaleString('en-US', {
+    timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
+  });
+}
+
+// "3 days, 4 hours remaining" style countdown text.
+function formatCountdown(targetDate) {
+  const ms = new Date(targetDate).getTime() - Date.now();
+  if (ms <= 0) return 'resetting soon';
+  const days = Math.floor(ms / (1000 * 60 * 60 * 24));
+  const hours = Math.floor((ms % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+  if (days > 0) return `${days}d ${hours}h remaining`;
+  const minutes = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60));
+  return `${hours}h ${minutes}m remaining`;
+}
+
 module.exports = {
   generateId, isAdmin, isStaff, progressBar, parseColor,
   isValidChatMessage, todayUTC, currentWeekStart, currentMonthStart, daysBetween,
+  nextMonday, nextMonthStart, formatUSTime, formatCountdown,
   RATE_LIMIT_MS,
 };

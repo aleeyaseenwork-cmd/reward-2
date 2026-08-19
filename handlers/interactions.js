@@ -3,7 +3,7 @@ const {
   ModalBuilder, TextInputBuilder, TextInputStyle,
   ChannelSelectMenuBuilder, ChannelType, PermissionsBitField
 } = require('discord.js');
-const { isAdmin, isStaff, generateId } = require('../utils/helpers');
+const { isAdmin, isStaff, generateId, nextMonday } = require('../utils/helpers');
 const {
   ServerConfig, InviteTierConfig, UserInvite, RewardTicket, Announcement, ScheduledPost,
 } = require('../models');
@@ -248,7 +248,7 @@ async function handleInteraction(interaction, client) {
           const publicEmbed = new EmbedBuilder()
             .setTitle('🎉 Invite Reward Paid')
             .setColor('#00FF88')
-            .setDescription(`<@${ticket.userId}> just claimed **${ticket.rewardLabel}** for **${ticket.tierCredits}** invite credits!`)
+            .setDescription(`<@${ticket.userId}> just got **${ticket.rewardLabel}** for **${ticket.tierCredits}** invites! 🚀 Keep growing!`)
             .setTimestamp();
           await ch.send({ embeds: [publicEmbed] }).catch(() => {});
         }
@@ -300,7 +300,7 @@ async function handleInteraction(interaction, client) {
   }
 
   // ── ADMIN GATE ────────────────────────────────────────────────────────────────
-  const ADMIN_PREFIXES = ['admin_', 'modal_admin_config', 'modal_chat_config', 'modal_invite_tiers', 'announce_channel_config_select', 'approved_channels_select', 'publish_invite_panel_', 'publish_chat_panel_', 'announce_', 'sched_post_', 'leaderboard_', 'modal_announce', 'modal_schedule_post'];
+  const ADMIN_PREFIXES = ['admin_', 'modal_admin_config', 'modal_chat_config', 'modal_invite_tiers', 'modal_chat_start_custom', 'modal_add_credits', 'announce_channel_config_select', 'approved_channels_select', 'publish_invite_panel_', 'publish_chat_panel_', 'announce_', 'sched_post_', 'leaderboard_', 'modal_announce', 'modal_schedule_post'];
   if (ADMIN_PREFIXES.some(p => id.startsWith(p))) {
     const member = await resolveMember(interaction);
     if (!member || !await isAdmin(member, guildId)) {
@@ -423,6 +423,86 @@ async function handleInteraction(interaction, client) {
     const newValue = !config.publicInviteAnnounce;
     await ServerConfig.findOneAndUpdate({ guildId }, { guildId, publicInviteAnnounce: newValue }, { upsert: true });
     return safeReply(interaction, { content: `✅ Public invite-claim announcements are now **${newValue ? 'ENABLED' : 'DISABLED'}**.` });
+  }
+
+  // ── SET ENGAGEMENT (CHAT) TRACKING START TIME ────────────────────────────────
+  if (id === 'admin_chat_start') {
+    const config = await ServerConfig.findOne({ guildId }) || {};
+    const embed = new EmbedBuilder().setTitle('⏱️ Set Engagement Start Time').setColor('#5865F2')
+      .setDescription(
+        `Messages sent before this time won't count toward the chat leaderboard — this stops this week from being an unfair partial week.\n\n` +
+        `Current setting: ${config.chatTrackingStartAt ? `**${new Date(config.chatTrackingStartAt).toUTCString()}**` : '**Starts immediately (no restriction)**'}`
+      );
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('admin_chat_start_monday').setLabel('Start Next Monday 00:00 UTC').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('admin_chat_start_custom').setLabel('Custom Date/Time').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('admin_chat_start_now').setLabel('Start Immediately').setStyle(ButtonStyle.Success),
+    );
+    return safeReply(interaction, { embeds: [embed], components: [row] });
+  }
+
+  if (id === 'admin_chat_start_monday') {
+    const monday = nextMonday();
+    await ServerConfig.findOneAndUpdate({ guildId }, { guildId, chatTrackingStartAt: monday }, { upsert: true });
+    return safeReply(interaction, { content: `✅ Engagement tracking will start **${monday.toUTCString()}**. Messages before that won't count.` });
+  }
+
+  if (id === 'admin_chat_start_now') {
+    await ServerConfig.findOneAndUpdate({ guildId }, { guildId, chatTrackingStartAt: null }, { upsert: true });
+    return safeReply(interaction, { content: '✅ Engagement tracking is active immediately — no start-time restriction.' });
+  }
+
+  if (id === 'admin_chat_start_custom') {
+    const modal = new ModalBuilder().setCustomId('modal_chat_start_custom').setTitle('Custom Engagement Start Time');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('date').setLabel('Date (YYYY-MM-DD)').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('2026-08-24')),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('time').setLabel('Time (HH:MM in UTC)').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('00:00')),
+    );
+    return interaction.showModal(modal);
+  }
+
+  if (id === 'modal_chat_start_custom') {
+    const date = interaction.fields.getTextInputValue('date');
+    const time = interaction.fields.getTextInputValue('time');
+    const startAt = new Date(`${date}T${time}:00.000Z`);
+    if (isNaN(startAt.getTime())) {
+      return safeReply(interaction, { content: '❌ Invalid date/time. Use YYYY-MM-DD and HH:MM (UTC).' });
+    }
+    await ServerConfig.findOneAndUpdate({ guildId }, { guildId, chatTrackingStartAt: startAt }, { upsert: true });
+    return safeReply(interaction, { content: `✅ Engagement tracking will start **${startAt.toUTCString()}**. Messages before that won't count.` });
+  }
+
+  // ── BULK ADD INVITE CREDITS (manual override for staff) ─────────────────────
+  if (id === 'admin_add_credits') {
+    const modal = new ModalBuilder().setCustomId('modal_add_credits').setTitle('Add Invite Credits');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId('lines').setLabel('One per line: UserID Credits').setStyle(TextInputStyle.Paragraph).setRequired(true)
+          .setPlaceholder('123456789012345678 20\n987654321098765432 50')
+      ),
+    );
+    return interaction.showModal(modal);
+  }
+
+  if (id === 'modal_add_credits') {
+    const raw = interaction.fields.getTextInputValue('lines');
+    const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+    const results = [];
+    for (const line of lines) {
+      const [targetId, creditsStr] = line.split(/\s+/);
+      const credits = parseInt(creditsStr, 10);
+      if (!targetId || !/^\d{15,25}$/.test(targetId) || !credits || credits <= 0) {
+        results.push(`❌ Skipped invalid line: \`${line}\``);
+        continue;
+      }
+      await UserInvite.findOneAndUpdate(
+        { guildId, userId: targetId },
+        { guildId, userId: targetId, $inc: { grantedCredits: credits }, $set: { updatedAt: new Date() } },
+        { upsert: true }
+      );
+      results.push(`✅ <@${targetId}> +${credits} credits`);
+    }
+    return safeReply(interaction, { content: `**Bulk credit update:**\n${results.join('\n')}` });
   }
 
   // ── ANNOUNCEMENT (send now / schedule) ────────────────────────────────────────
@@ -572,7 +652,7 @@ async function handleInteraction(interaction, client) {
         'or use the buttons at the bottom to check your progress.\n\n' +
         tiers.map(t => `**${t.reward}** — ${t.credits} credits`).join('\n')
       )
-      .setFooter({ text: 'An invite becomes valid once the member verifies, stays 7+ days, sends 10+ valid messages, and their account is 30+ days old.' });
+      .setFooter({ text: 'An invite becomes valid once the member verifies, stays 7+ days, and their account is 30+ days old.' });
 
     // One button per tier (chunked into rows of 5), plus a final row for progress/apply.
     const tierButtons = tiers.slice(0, 20).map(t =>
@@ -614,10 +694,10 @@ async function handleInteraction(interaction, client) {
       .setTitle('💬 Chat Rewards')
       .setColor('#F5A623')
       .setDescription(
-        `Stay active and climb the leaderboard for a chance to win!\n\n` +
-        `**Weekly:** ${weeklyMin}+ valid messages → **${weeklyReward}** (resets every Monday)\n` +
-        `**Monthly:** ${monthlyMin}+ valid messages → **${monthlyReward}** (resets on the 1st)\n\n` +
-        `Winners are picked and announced **automatically** — check your progress below to see where you stand.`
+        `Only the **single most active member** wins each period — not everyone who hits the minimum!\n\n` +
+        `🥇 **Weekly Winner** — must reach ${weeklyMin}+ valid messages to qualify → **${weeklyReward}** (resets every Monday 00:00 UTC)\n` +
+        `👑 **Monthly Winner** — must reach ${monthlyMin}+ valid messages to qualify → **${monthlyReward}** (resets 1st of the month)\n\n` +
+        `The minimum just makes you *eligible* — the top chatter above that line takes the reward. Winners are picked and announced automatically — check your progress below to see where you stand.`
       );
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('panel_progress').setLabel('📊 Check Your Progress').setStyle(ButtonStyle.Primary),
@@ -635,7 +715,8 @@ async function handleInteraction(interaction, client) {
     const embed = new EmbedBuilder().setTitle('⚙️ Current Settings').setColor('#5865F2').addFields(
       { name: 'Roles', value: `Admin: ${config.adminRoleId ? `<@&${config.adminRoleId}>` : 'Not set'}\nStaff: ${config.staffRoleId ? `<@&${config.staffRoleId}>` : 'Not set'}\nVerified: ${config.verifiedRoleId ? `<@&${config.verifiedRoleId}>` : 'Not set'}`, inline: true },
       { name: 'Channels', value: `Ticket Category: ${config.ticketCategoryId || 'Not set'}\nAnnounce: ${config.chatAnnounceChannelId ? `<#${config.chatAnnounceChannelId}>` : 'Not set'}\nApproved: ${config.approvedChannelIds?.length ? config.approvedChannelIds.map(c => `<#${c}>`).join(', ') : 'All channels'}`, inline: true },
-      { name: 'Chat Rewards', value: `Weekly: ${config.weeklyMinMessages ?? 100}+ msgs → ${config.weeklyReward || '$5 USDT or $5 Discord Nitro'}\nMonthly: ${config.monthlyMinMessages ?? 400}+ msgs → ${config.monthlyReward || '$20 USDT or $20 Discord Nitro'}`, inline: false },
+      { name: 'Chat Rewards', value: `Weekly: ${config.weeklyMinMessages ?? 100}+ msgs → ${config.weeklyReward || '$5 USDT or $5 Discord Nitro'} (single top winner)\nMonthly: ${config.monthlyMinMessages ?? 400}+ msgs → ${config.monthlyReward || '$20 USDT or $20 Discord Nitro'} (single top winner)`, inline: false },
+      { name: 'Engagement Start Time', value: config.chatTrackingStartAt ? new Date(config.chatTrackingStartAt).toUTCString() : 'Immediate (no restriction)', inline: false },
       { name: 'Invite Credit Tiers', value: tiers.map(t => `${t.credits} credits → ${t.reward}`).join('\n'), inline: false },
       { name: 'Public Invite Announcements', value: config.publicInviteAnnounce ? 'Enabled' : 'Disabled', inline: false },
     );

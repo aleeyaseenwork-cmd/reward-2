@@ -122,6 +122,9 @@ async function handleMessage(message) {
     if (config?.approvedChannelIds?.length && !config.approvedChannelIds.includes(message.channel.id)) {
       return; // not an approved channel
     }
+    if (config?.chatTrackingStartAt && new Date() < new Date(config.chatTrackingStartAt)) {
+      return; // engagement tracking hasn't officially started yet
+    }
 
     let stats = await ChatStats.findOne({ guildId, userId });
     if (!stats) stats = new ChatStats({ guildId, userId });
@@ -171,7 +174,7 @@ async function handleMessageDelete(message) {
 }
 
 // Periodically grants invite credits once ALL validity requirements are met:
-// real member, verified role, 7+ days in server, 10+ valid messages, account 30+ days old.
+// real member, verified role, 7+ days in server, account 30+ days old.
 // Runs on a timer because "stayed X days" can only be discovered by time passing,
 // not by any single Discord event.
 async function evaluateInviteCredits() {
@@ -183,7 +186,6 @@ async function evaluateInviteCredits() {
         if (entry.creditGranted || entry.leftAt || !entry.valid) continue;
         if (!entry.verified) continue;
         if (!entry.joinedAt || daysBetween(entry.joinedAt, new Date()) < 7) continue;
-        if ((entry.messageCount || 0) < 10) continue;
         if (!entry.accountCreatedAt || daysBetween(entry.accountCreatedAt, new Date()) < 30) continue;
 
         entry.creditGranted = true;
