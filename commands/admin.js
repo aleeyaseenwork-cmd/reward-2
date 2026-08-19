@@ -39,9 +39,12 @@ module.exports = {
       new ButtonBuilder().setCustomId('admin_announce').setLabel('📣 Announcement').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('admin_schedule').setLabel('🗓️ Schedule Post').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('admin_view_settings').setLabel('👁️ View Settings').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('admin_publish_panel').setLabel('📋 Publish Rewards Panel').setStyle(ButtonStyle.Success),
+    );
+    const row4 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('admin_publish_invite_panel').setLabel('🎟️ Publish Invite Panel').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('admin_publish_chat_panel').setLabel('💬 Publish Chat Reward Panel').setStyle(ButtonStyle.Success),
     );
 
-    return interaction.editReply({ embeds: [embed], components: [row1, row2, row3] });
+    return interaction.editReply({ embeds: [embed], components: [row1, row2, row3, row4] });
   }
 };

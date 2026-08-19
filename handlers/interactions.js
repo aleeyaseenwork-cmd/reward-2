@@ -102,6 +102,37 @@ async function handleInteraction(interaction, client) {
     return claimCommand.execute(interaction);
   }
 
+  // Direct tier button on the invite panel (e.g. "$3 - 20 Invites") — skips the
+  // select-menu step and jumps straight to the Nitro/USDT choice.
+  if (id.startsWith('panel_claim_tier_')) {
+    const credits = parseInt(id.replace('panel_claim_tier_', ''), 10);
+    const tiers = await getTiers(guildId);
+    const tier = tiers.find(t => t.credits === credits);
+    if (!tier) return safeReply(interaction, { content: '❌ That tier no longer exists.' });
+
+    const doc = await UserInvite.findOne({ guildId, userId });
+    const available = doc ? (doc.grantedCredits - doc.reservedCredits - doc.consumedCredits) : 0;
+    if (available < credits) {
+      return safeReply(interaction, { content: `❌ You need **${credits}** invite credits for **${tier.reward}**. You currently have **${available}** available.` });
+    }
+
+    const embed = new EmbedBuilder().setTitle('Choose Your Payout').setColor('#5865F2')
+      .setDescription(`You selected **${tier.reward}** for **${credits}** invite credits.\n\nHow would you like to receive it?`);
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`invite_claim_choice_nitro_${credits}`).setLabel('🎮 Discord Nitro').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`invite_claim_choice_usdt_${credits}`).setLabel('💵 USDT').setStyle(ButtonStyle.Primary),
+    );
+    return safeReply(interaction, { embeds: [embed], components: [row] });
+  }
+
+  // "Apply for Reward" on the chat panel — chat rewards are automatic, so this
+  // just explains that and points the member at their live progress instead.
+  if (id === 'panel_chat_apply') {
+    return safeReply(interaction, {
+      content: '🏆 Chat rewards are awarded **automatically** — the top performer each week/month is announced and given a private ticket, no application needed.\n\nUse **📊 My Progress** to see exactly how close you are to winning.',
+    });
+  }
+
   // ── INVITE CLAIM: tier selected → ask Nitro or USDT ──────────────────────────
   if (id === 'invite_claim_tier_select') {
     const credits = parseInt(interaction.values[0], 10);
@@ -269,7 +300,7 @@ async function handleInteraction(interaction, client) {
   }
 
   // ── ADMIN GATE ────────────────────────────────────────────────────────────────
-  const ADMIN_PREFIXES = ['admin_', 'modal_admin_config', 'modal_chat_config', 'modal_invite_tiers', 'announce_channel_config_select', 'approved_channels_select', 'publish_panel_', 'announce_', 'sched_post_', 'leaderboard_', 'modal_announce', 'modal_schedule_post'];
+  const ADMIN_PREFIXES = ['admin_', 'modal_admin_config', 'modal_chat_config', 'modal_invite_tiers', 'announce_channel_config_select', 'approved_channels_select', 'publish_invite_panel_', 'publish_chat_panel_', 'announce_', 'sched_post_', 'leaderboard_', 'modal_announce', 'modal_schedule_post'];
   if (ADMIN_PREFIXES.some(p => id.startsWith(p))) {
     const member = await resolveMember(interaction);
     if (!member || !await isAdmin(member, guildId)) {
@@ -519,61 +550,82 @@ async function handleInteraction(interaction, client) {
     return interaction.update({ content: `✅ Leaderboard published in <#${channelId}>. It will auto-refresh every 24 hours.`, embeds: [], components: [] });
   }
 
-  // ── PUBLISH REWARDS INFO PANEL (pre-written, pulls live settings) ────────────
-  if (id === 'admin_publish_panel') {
-    const embed = new EmbedBuilder().setTitle('📋 Publish Rewards Panel').setColor('#5865F2')
-      .setDescription('Select the channel to post the rewards info panel in. The title, description, and rules are generated automatically from your current settings — nothing to type.');
-    const row = new ActionRowBuilder().addComponents(new ChannelSelectMenuBuilder().setCustomId('publish_panel_channel_select').setPlaceholder('Select channel').addChannelTypes(ChannelType.GuildText));
+  // ── PUBLISH INVITE PANEL (one button per reward tier, pulls live config) ────
+  if (id === 'admin_publish_invite_panel') {
+    const embed = new EmbedBuilder().setTitle('🎟️ Publish Invite Panel').setColor('#5865F2')
+      .setDescription('Select the channel to post the invite rewards panel in. A button is generated automatically for every configured tier — nothing to type.');
+    const row = new ActionRowBuilder().addComponents(new ChannelSelectMenuBuilder().setCustomId('publish_invite_panel_channel_select').setPlaceholder('Select channel').addChannelTypes(ChannelType.GuildText));
     return safeReply(interaction, { embeds: [embed], components: [row] });
   }
 
-  if (id === 'publish_panel_channel_select') {
+  if (id === 'publish_invite_panel_channel_select') {
+    const channelId = interaction.values[0];
+    const ch = interaction.guild.channels.cache.get(channelId);
+    if (!ch) return interaction.update({ content: '❌ Channel not found.', embeds: [], components: [] });
+
+    const tiers = await getTiers(guildId);
+    const panelEmbed = new EmbedBuilder()
+      .setTitle('🎟️ Invite Rewards')
+      .setColor('#5865F2')
+      .setDescription(
+        'Invite real, active members and earn credits for real rewards! Pick a tier below to claim once you\'re eligible, ' +
+        'or use the buttons at the bottom to check your progress.\n\n' +
+        tiers.map(t => `**${t.reward}** — ${t.credits} credits`).join('\n')
+      )
+      .setFooter({ text: 'An invite becomes valid once the member verifies, stays 7+ days, sends 10+ valid messages, and their account is 30+ days old.' });
+
+    // One button per tier (chunked into rows of 5), plus a final row for progress/apply.
+    const tierButtons = tiers.slice(0, 20).map(t =>
+      new ButtonBuilder().setCustomId(`panel_claim_tier_${t.credits}`).setLabel(`${t.reward} - ${t.credits} Invites`).setStyle(ButtonStyle.Success)
+    );
+    const rows = [];
+    for (let i = 0; i < tierButtons.length && rows.length < 4; i += 5) {
+      rows.push(new ActionRowBuilder().addComponents(tierButtons.slice(i, i + 5)));
+    }
+    rows.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('panel_progress').setLabel('📊 Check Your Progress').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('panel_claim_invite').setLabel('🎟️ Apply for Reward').setStyle(ButtonStyle.Primary),
+    ));
+
+    await ch.send({ embeds: [panelEmbed], components: rows });
+    return interaction.update({ content: `✅ Invite panel published in <#${channelId}> with ${tiers.length} tier button(s)!`, embeds: [], components: [] });
+  }
+
+  // ── PUBLISH CHAT REWARD PANEL (Check Progress + Apply for Reward only) ──────
+  if (id === 'admin_publish_chat_panel') {
+    const embed = new EmbedBuilder().setTitle('💬 Publish Chat Reward Panel').setColor('#5865F2')
+      .setDescription('Select the channel to post the chat leaderboard panel in. It generates automatically from your current weekly/monthly settings.');
+    const row = new ActionRowBuilder().addComponents(new ChannelSelectMenuBuilder().setCustomId('publish_chat_panel_channel_select').setPlaceholder('Select channel').addChannelTypes(ChannelType.GuildText));
+    return safeReply(interaction, { embeds: [embed], components: [row] });
+  }
+
+  if (id === 'publish_chat_panel_channel_select') {
     const channelId = interaction.values[0];
     const ch = interaction.guild.channels.cache.get(channelId);
     if (!ch) return interaction.update({ content: '❌ Channel not found.', embeds: [], components: [] });
 
     const config = await ServerConfig.findOne({ guildId }) || {};
-    const tiers = await getTiers(guildId);
     const weeklyMin = config.weeklyMinMessages ?? 100;
     const monthlyMin = config.monthlyMinMessages ?? 400;
     const weeklyReward = config.weeklyReward || '$5 USDT or $5 Discord Nitro';
     const monthlyReward = config.monthlyReward || '$20 USDT or $20 Discord Nitro';
 
     const panelEmbed = new EmbedBuilder()
-      .setTitle('🏆 Server Rewards')
-      .setColor('#5865F2')
-      .setDescription('Earn real rewards just by being active and inviting friends! Everything below tracks automatically.')
-      .addFields(
-        {
-          name: '💬 Chat Leaderboard',
-          value:
-            `**Weekly:** ${weeklyMin}+ valid messages → **${weeklyReward}** (resets every Monday)\n` +
-            `**Monthly:** ${monthlyMin}+ valid messages → **${monthlyReward}** (resets on the 1st)\n` +
-            `Winners are announced automatically — no need to claim anything.`,
-          inline: false,
-        },
-        {
-          name: '🎟️ Invite Rewards',
-          value:
-            tiers.map(t => `**${t.credits}** credits → **${t.reward}**`).join('\n') +
-            `\nEarn a credit for every real, active invited member. Use the button below to check your progress or claim.`,
-          inline: false,
-        },
-        {
-          name: '✅ What counts as a valid message?',
-          value: 'At least 5 meaningful characters, not spam/repeated, not emoji-only, max 1 every 15 seconds, in an approved channel.',
-          inline: false,
-        },
-      )
-      .setFooter({ text: 'Use the buttons below to check your progress or claim an invite reward.' });
-
+      .setTitle('💬 Chat Rewards')
+      .setColor('#F5A623')
+      .setDescription(
+        `Stay active and climb the leaderboard for a chance to win!\n\n` +
+        `**Weekly:** ${weeklyMin}+ valid messages → **${weeklyReward}** (resets every Monday)\n` +
+        `**Monthly:** ${monthlyMin}+ valid messages → **${monthlyReward}** (resets on the 1st)\n\n` +
+        `Winners are picked and announced **automatically** — check your progress below to see where you stand.`
+      );
     const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('panel_progress').setLabel('📊 My Progress').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('panel_claim_invite').setLabel('🎟️ Claim Invite Reward').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('panel_progress').setLabel('📊 Check Your Progress').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('panel_chat_apply').setLabel('✋ Apply for Reward').setStyle(ButtonStyle.Primary),
     );
 
     await ch.send({ embeds: [panelEmbed], components: [row] });
-    return interaction.update({ content: `✅ Rewards panel published in <#${channelId}>!`, embeds: [], components: [] });
+    return interaction.update({ content: `✅ Chat reward panel published in <#${channelId}>!`, embeds: [], components: [] });
   }
 
   // ── VIEW CURRENT SETTINGS ──────────────────────────────────────────────────────
