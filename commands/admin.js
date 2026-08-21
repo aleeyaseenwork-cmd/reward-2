@@ -23,6 +23,8 @@ module.exports = {
         { name: 'Announce Channel', value: config.chatAnnounceChannelId ? `<#${config.chatAnnounceChannelId}>` : 'Not set', inline: true },
         { name: 'Public Invite Announce', value: config.publicInviteAnnounce ? 'Enabled ✅' : 'Disabled ❌', inline: true },
         { name: 'Engagement Start', value: config.chatTrackingStartAt ? `${new Date(config.chatTrackingStartAt).toUTCString()}` : 'Immediate (no restriction)', inline: true },
+        { name: 'Spam Detection', value: config.spamDetectionEnabled === false ? 'Disabled ❌' : 'Enabled ✅', inline: true },
+        { name: 'Mod Log', value: config.modLogChannelId ? `<#${config.modLogChannelId}>` : 'Not set', inline: true },
       );
 
     const row1 = new ActionRowBuilder().addComponents(
@@ -42,10 +44,12 @@ module.exports = {
       new ButtonBuilder().setCustomId('admin_announce').setLabel('📣 Announcement').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('admin_schedule').setLabel('🗓️ Schedule Post').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('admin_view_settings').setLabel('👁️ View Settings').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('admin_set_modlog').setLabel('🛡️ Mod Log Channel').setStyle(ButtonStyle.Secondary),
     );
     const row4 = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('admin_publish_invite_panel').setLabel('🎟️ Publish Invite Panel').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId('admin_publish_chat_panel').setLabel('💬 Publish Chat Reward Panel').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('admin_toggle_spam').setLabel('🚫 Toggle Spam Detection').setStyle(ButtonStyle.Secondary),
     );
 
     return interaction.editReply({ embeds: [embed], components: [row1, row2, row3, row4] });

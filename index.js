@@ -57,11 +57,11 @@ client.once('ready', async () => {
   cron.schedule('* * * * *', () => runScheduler(client));
   console.log('🕐 Announcement/post scheduler started (every minute).');
 
-  // Grants invite credits once a member meets ALL validity requirements
-  // (verified role, 7+ days stayed, 10+ valid messages, 30+ day old account).
-  // Runs every 15 minutes — the "7 days stayed" check can only be discovered
-  // by time passing, not by a Discord event, and this keeps DB load light.
-  cron.schedule('*/15 * * * *', () => evaluateInviteCredits());
+  // Grants invite credits once a member meets every validity requirement
+  // (verified role, account 30+ days old at join, not a rejoin).
+  // Runs every 15 minutes so roles granted while the bot was offline are still
+  // picked up, without hammering the database.
+  cron.schedule('*/15 * * * *', () => evaluateInviteCredits(client));
   console.log('🎟️ Invite credit evaluation scheduled (every 15 minutes).');
 
   // Weekly chat leaderboard winner — Monday 00:00 UTC.

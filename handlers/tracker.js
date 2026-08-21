@@ -1,5 +1,8 @@
 const { ChatStats, CountedMessage, UserInvite, ServerConfig } = require('../models');
-const { isValidChatMessage, todayUTC, daysBetween } = require('../utils/helpers');
+const {
+  isValidChatMessage, todayUTC, isFakeAccount, isFakeInvite, detectSpam, isStaff, SPAM_HISTORY_SIZE,
+} = require('../utils/helpers');
+const { recordSpamStrike } = require('./moderation');
 
 const inviteCache = new Map();
 
@@ -11,7 +14,7 @@ async function initInviteCache(guild) {
 }
 
 // Is this Discord user already tracked as someone's invited user in this guild?
-// Enforces "have not already been credited to another inviter".
+// Enforces "have not already been credited to another inviter" and identifies rejoins.
 async function isAlreadyTracked(guildId, invitedUserId) {
   const existing = await UserInvite.findOne({ guildId, 'invitedUsers.userId': invitedUserId });
   return !!existing;
@@ -33,24 +36,29 @@ async function handleMemberJoin(member, client) {
     }
     if (!inviterId || inviterId === member.id) return;
 
-    if (await isAlreadyTracked(guildId, member.id)) return; // dedupe across inviters
+    // Anyone already tracked in this guild is a rejoin. It's still recorded so
+    // /invite can show it, but it can never earn a credit for anyone.
+    const rejoin = await isAlreadyTracked(guildId, member.id);
+    const joinedAt = new Date();
+    const accountCreatedAt = member.user.createdAt;
 
     await UserInvite.findOneAndUpdate(
       { guildId, userId: inviterId },
       {
-        guildId, userId: inviterId,
         $push: {
           invitedUsers: {
             userId: member.id,
-            joinedAt: new Date(),
+            joinedAt,
             verified: false,
             messageCount: 0,
-            accountCreatedAt: member.user.createdAt,
+            accountCreatedAt,
             creditGranted: false,
             valid: true,
+            fake: isFakeAccount(accountCreatedAt, joinedAt),
+            rejoin,
           },
         },
-        $set: { inviteCode: inviterCode, updatedAt: new Date() },
+        $set: { guildId, userId: inviterId, inviteCode: inviterCode, updatedAt: new Date() },
       },
       { upsert: true }
     );
@@ -63,39 +71,51 @@ async function handleMemberJoin(member, client) {
 async function handleMemberLeave(member) {
   const guildId = member.guild.id;
   try {
-    const doc = await UserInvite.findOne({ guildId, 'invitedUsers.userId': member.id });
-    if (!doc) return;
-    const idx = doc.invitedUsers.findIndex(u => u.userId === member.id);
-    if (idx === -1) return;
-    const entry = doc.invitedUsers[idx];
+    // A rejoiner can appear under more than one inviter, so every matching
+    // entry has to be closed out, not just the first one found.
+    const docs = await UserInvite.find({ guildId, 'invitedUsers.userId': member.id });
+    for (const doc of docs) {
+      let changed = false;
+      for (const entry of doc.invitedUsers) {
+        if (entry.userId !== member.id || entry.leftAt) continue;
 
-    entry.leftAt = new Date();
-    entry.valid = false;
+        entry.leftAt = new Date();
+        entry.valid = false;
+        changed = true;
 
-    if (entry.creditGranted) {
-      const available = doc.grantedCredits - doc.reservedCredits - doc.consumedCredits;
-      if (available > 0) {
-        doc.grantedCredits = Math.max(0, doc.grantedCredits - 1);
-        entry.creditGranted = false;
+        if (entry.creditGranted) {
+          const available = doc.grantedCredits - doc.reservedCredits - doc.consumedCredits;
+          if (available > 0) {
+            doc.grantedCredits = Math.max(0, doc.grantedCredits - 1);
+            entry.creditGranted = false;
+          }
+          // else: credit already reserved/consumed — protected, left untouched
+        }
       }
-      // else: credit already reserved/consumed — protected, left untouched
+      if (changed) {
+        doc.markModified('invitedUsers');
+        await doc.save();
+      }
     }
-
-    doc.markModified('invitedUsers');
-    await doc.save();
   } catch (e) { console.error('[Leave Track]', e.message); }
 }
 
 async function handleVerifiedRole(member, guildId) {
   try {
-    const doc = await UserInvite.findOne({ guildId, 'invitedUsers.userId': member.id });
-    if (!doc) return;
-    const idx = doc.invitedUsers.findIndex(u => u.userId === member.id);
-    if (idx === -1) return;
-    doc.invitedUsers[idx].verified = true;
-    doc.invitedUsers[idx].verifiedAt = new Date();
-    doc.markModified('invitedUsers');
-    await doc.save();
+    const docs = await UserInvite.find({ guildId, 'invitedUsers.userId': member.id });
+    for (const doc of docs) {
+      let changed = false;
+      for (const entry of doc.invitedUsers) {
+        if (entry.userId !== member.id || entry.verified) continue;
+        entry.verified = true;
+        entry.verifiedAt = new Date();
+        changed = true;
+      }
+      if (changed) {
+        doc.markModified('invitedUsers');
+        await doc.save();
+      }
+    }
   } catch (_) {}
 }
 
@@ -126,15 +146,39 @@ async function handleMessage(message) {
       return; // engagement tracking hasn't officially started yet
     }
 
+    // Attachment-only posts have no text to judge, and feeding empty strings to
+    // the repeat detectors would flag anyone sharing a few images.
+    if (!content || !content.trim()) return;
+
     let stats = await ChatStats.findOne({ guildId, userId });
     if (!stats) stats = new ChatStats({ guildId, userId });
 
-    const check = isValidChatMessage(content, stats.recentMessages || [], stats.lastValidMessageAt);
-    if (!check.valid) return;
+    const history = stats.recentMessages || [];
+    const timestamps = stats.recentMessageAt || [];
+    const check = isValidChatMessage(content, history, stats.lastValidMessageAt);
 
-    const recent = (stats.recentMessages || []).slice(-9);
-    recent.push(content.trim());
-    stats.recentMessages = recent;
+    // Every message goes into the rolling window, counted or not — spam
+    // detection is only meaningful if it can see the messages that were dropped.
+    stats.recentMessages = [...history, content.trim()].slice(-SPAM_HISTORY_SIZE);
+    stats.recentMessageAt = [...timestamps, new Date()].slice(-SPAM_HISTORY_SIZE);
+
+    if (config?.spamDetectionEnabled !== false) {
+      const spam = detectSpam(content, history, timestamps);
+      if (spam.spam) {
+        await stats.save();
+        // Staff are exempt so a moderator posting canned replies can't be muted
+        // by their own bot.
+        if (message.member && !await isStaff(message.member, guildId)) {
+          await recordSpamStrike(message.member, spam.reason);
+        }
+        return; // spam never scores
+      }
+    }
+
+    if (!check.valid) {
+      await stats.save();
+      return;
+    }
 
     stats.weeklyMessages = (stats.weeklyMessages || 0) + 1;
     stats.monthlyMessages = (stats.monthlyMessages || 0) + 1;
@@ -151,8 +195,8 @@ async function handleMessage(message) {
     await stats.save();
     await CountedMessage.create({ guildId, userId, messageId: message.id, channelId: message.channel.id });
 
-    // Counts toward the invite's "10 valid messages" requirement, if this user was invited.
-    await UserInvite.updateOne(
+    // Kept for staff visibility only — message activity is not a credit requirement.
+    await UserInvite.updateMany(
       { guildId, 'invitedUsers.userId': userId },
       { $inc: { 'invitedUsers.$.messageCount': 1 } }
     );
@@ -173,29 +217,73 @@ async function handleMessageDelete(message) {
   } catch (e) { console.error('[Delete Track]', e.message); }
 }
 
-// Periodically grants invite credits once ALL validity requirements are met:
-// real member, verified role, 7+ days in server, account 30+ days old.
-// Runs on a timer because "stayed X days" can only be discovered by time passing,
-// not by any single Discord event.
-async function evaluateInviteCredits() {
+// Pulls members into cache in batches of 100 so the role check below costs one
+// request per hundred members rather than one per member.
+async function ensureMembersCached(client, guildId, userIds) {
+  const guild = client?.guilds?.cache.get(guildId);
+  if (!guild) return null;
+  const missing = userIds.filter(id => !guild.members.cache.has(id));
+  for (let i = 0; i < missing.length; i += 100) {
+    await guild.members.fetch({ user: missing.slice(i, i + 100) }).catch(() => {});
+  }
+  return guild;
+}
+
+function isCreditCandidate(entry) {
+  if (entry.creditGranted || entry.leftAt || !entry.valid) return false;
+  if (entry.rejoin) return false;        // a returning member is never a new invite
+  if (isFakeInvite(entry)) return false; // account was under 30 days old at join
+  return true;
+}
+
+// Periodically grants invite credits once every validity requirement is met:
+// a real member who holds the verified role, whose account was 30+ days old when
+// they joined, and who isn't a rejoin. Runs on a timer rather than purely on
+// events so roles granted while the bot was offline are still picked up.
+async function evaluateInviteCredits(client) {
   try {
     const docs = await UserInvite.find({ 'invitedUsers.creditGranted': false });
-    for (const doc of docs) {
-      let changed = false;
-      for (const entry of doc.invitedUsers) {
-        if (entry.creditGranted || entry.leftAt || !entry.valid) continue;
-        if (!entry.verified) continue;
-        if (!entry.joinedAt || daysBetween(entry.joinedAt, new Date()) < 7) continue;
-        if (!entry.accountCreatedAt || daysBetween(entry.accountCreatedAt, new Date()) < 30) continue;
 
-        entry.creditGranted = true;
-        doc.grantedCredits = (doc.grantedCredits || 0) + 1;
-        changed = true;
+    const byGuild = new Map();
+    for (const doc of docs) {
+      if (!byGuild.has(doc.guildId)) byGuild.set(doc.guildId, []);
+      byGuild.get(doc.guildId).push(doc);
+    }
+
+    for (const [guildId, guildDocs] of byGuild) {
+      const config = await ServerConfig.findOne({ guildId });
+      const verifiedRoleId = config?.verifiedRoleId;
+      // Without a configured verified role there is no way to validate anyone.
+      if (!verifiedRoleId) continue;
+
+      const awaitingVerification = new Set();
+      for (const doc of guildDocs) {
+        for (const entry of doc.invitedUsers) {
+          if (isCreditCandidate(entry) && !entry.verified) awaitingVerification.add(entry.userId);
+        }
       }
-      if (changed) {
-        doc.markModified('invitedUsers');
-        doc.updatedAt = new Date();
-        await doc.save();
+      const guild = await ensureMembersCached(client, guildId, [...awaitingVerification]);
+
+      for (const doc of guildDocs) {
+        let changed = false;
+        for (const entry of doc.invitedUsers) {
+          if (!isCreditCandidate(entry)) continue;
+
+          if (!entry.verified) {
+            if (!guild?.members.cache.get(entry.userId)?.roles.cache.has(verifiedRoleId)) continue;
+            entry.verified = true;
+            entry.verifiedAt = new Date();
+          }
+
+          entry.creditGranted = true;
+          doc.grantedCredits = (doc.grantedCredits || 0) + 1;
+          changed = true;
+        }
+        if (changed) {
+          doc.markModified('invitedUsers');
+          doc.updatedAt = new Date();
+          await doc.save();
+        }
       }
     }
   } catch (e) { console.error('[Credit Eval]', e.message); }

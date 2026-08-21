@@ -7,25 +7,63 @@ scheduled posts. Built with **discord.js v14** and **MongoDB (Mongoose)**.
 ## What it does
 
 ### 1. Chat Leaderboards (fully automatic)
-- **Weekly reward** — the member with the most valid messages Monday 00:00 → Sunday 23:59 UTC
-  wins (default: $5 USDT or $5 Discord Nitro, min. 100 valid messages). Announced automatically
-  every Monday.
-- **Monthly reward** — same idea over the calendar month (default: $20, min. 400 valid messages).
-  Announced automatically on the 1st of the following month.
-- The same person can win both.
+The **top 3** most active members are paid every period. Every amount is offered as either USDT or
+Discord Nitro — the winner picks in their ticket.
+
+| Place | Weekly (min. 100 msgs) | Monthly (min. 400 msgs) |
+|---|---|---|
+| 🥇 1st | $5  | $25 |
+| 🥈 2nd | $3  | $10 |
+| 🥉 3rd | $2  | $5  |
+
+- **Weekly** runs Monday 00:00 → Sunday 23:59 UTC and is announced every Monday.
+  **Monthly** runs over the calendar month and is announced on the 1st.
+- Both payout ladders are editable in `/admin` → **Chat Reward Settings**, entered comma-separated
+  best place first (`$5, $3, $2`). The number of entries decides how many places get paid — add a
+  fourth to pay a 4th place, or leave one to go back to winner-takes-all.
+- The minimum only makes you **eligible**; your rank decides your reward. The same person can win
+  weekly and monthly.
 - **Valid-message rules** (enforced automatically): 5+ meaningful characters, not from a bot,
   not a repeat of a message they already sent, not emoji/symbol-only, max 1 qualifying message
   per 15 seconds, and only in approved channels. Edited messages never add points. Deleted
   messages have their point removed automatically.
 - **Tie-breaking**: (1) more active days wins, (2) whoever reached the tied score first wins,
   (3) otherwise staff decides manually in the ticket.
-- On a win, the bot **freezes the ranking, saves it to history, announces + tags the winner
-  publicly, opens a private ticket, lets the winner pick Nitro or USDT**, and staff mark it paid.
+- At reset the bot **freezes the ranking, saves every placing to history, announces + tags all
+  winners publicly, opens one private ticket per winner** with their own payout, and staff mark
+  each paid.
 
-### 2. Invite Credit Rewards
+### 2. Anti-Spam (fully automatic)
+Farming the leaderboard is detected and punished without staff involvement. Three patterns are
+flagged, all judged over a short window so ordinary chatting is never caught:
+
+| Pattern | Trigger |
+|---|---|
+| Flooding | 8+ messages in under 15 seconds |
+| Repetition | 5+ near-identical messages (85% similar) within 3 minutes |
+| Canned filler | 12+ messages in 3 minutes recycled from a handful of phrases |
+
+- Flagged messages **never count** toward the leaderboard.
+- The member gets a **DM warning** explaining what was detected and how many strikes remain.
+- **Third strike = a 24-hour Discord timeout (mute)**, and the counter resets so the next offence
+  starts the ladder again.
+- One strike per spam episode (5-minute cooldown), and strikes decay after **7 clean days**.
+- **Staff are exempt.** Warnings and mutes are posted to the mod log channel with a one-click
+  **Unmute & Clear Warnings** button, and staff can also use `/warnings view|clear|unmute`.
+- The whole system can be switched off with `/admin` → **🚫 Toggle Spam Detection**.
+- The bot needs the **Moderate Members** permission and a role above the members it mutes; if a
+  mute fails, the mod log says so explicitly.
+
+### 3. Invite Credit Rewards
 - Every valid invite earns 1 **credit**. An invited user only counts once **all** of these are true:
-  real (non-bot) Discord member, has the server's verified role, stayed 7+ days, sent 10+ valid
-  messages, account is 30+ days old, and hasn't already been credited to a different inviter.
+  real (non-bot) Discord member, has the server's **verified/member role**, and their Discord
+  account was **30+ days old on the day they joined**.
+- **Fake invites** — an account younger than 30 days at join is permanently marked fake. Account age
+  is judged once, at join time, so an alt farm can't wait for its accounts to age into validity.
+- **Rejoins** — anyone already tracked in this server is logged as a rejoin and **never** earns a
+  credit for anyone, even if a different member's invite link was used.
+- There is **no message-count requirement**. Message activity is still recorded for staff
+  visibility, but it does not gate credits.
 - If an invited user leaves **before** their credit was spent on a paid reward, the credit is
   removed. Credits already reserved or paid out are never touched (so payment history never goes
   negative).
@@ -46,24 +84,37 @@ scheduled posts. Built with **discord.js v14** and **MongoDB (Mongoose)**.
 - **Invite claims are never announced publicly unless staff enables it** (`Toggle Public Invite
   Announce` in `/admin`).
 
-### 3. Also included
-- **Live invite leaderboard** — Top 10 inviters by credits, auto-refreshing every 24 hours.
+### 4. Also included
+- **`/invite`** — a member's own invite breakdown: real invites, pending verification, fake invites,
+  rejoins, and members who left, plus their credit balance. Staff can pass a `user` option to look
+  up someone else.
+- **`/leaderboard-msgs`** — public weekly + monthly message Top 10.
+- **`/leaderboard-invites`** — public Top 10 inviters by credits.
+- **`/warnings view|clear|unmute`** — staff-only spam warning management. Not gated by Discord
+  permissions (your staff role may not carry any), so the bot checks the configured staff role
+  itself and refuses anyone else.
+- **Live invite leaderboard** — an auto-refreshing Top 10 message, updated every 24 hours.
 - **Announcements** — send now or schedule for a specific UTC date/time.
 - **Scheduled posts** — plain content/image posts, manageable via `/scheduled list` / `cancel`.
-- **`/progress`** — a member's own weekly/monthly chat progress and invite credit balance.
+- **`/progress`** — the chat leaderboard standings with your own rank, plus your credit balance.
 
 ## Project Structure
 
 ```
 reward_bot/
 ├── commands/
-│   ├── admin.js       # /admin — configuration panel
-│   ├── claim.js        # /claim invite — redeem invite credits
-│   ├── progress.js     # /progress — personal chat + invite progress
-│   └── scheduled.js    # /scheduled list|cancel
+│   ├── admin.js                 # /admin — configuration panel
+│   ├── claim.js                 # /claim invite — redeem invite credits
+│   ├── invite.js                # /invite — real / fake / rejoin breakdown
+│   ├── leaderboard-invites.js   # /leaderboard-invites — Top 10 inviters
+│   ├── leaderboard-msgs.js      # /leaderboard-msgs — Top 10 chatters
+│   ├── progress.js              # /progress — standings + personal progress
+│   ├── scheduled.js             # /scheduled list|cancel
+│   └── warnings.js              # /warnings view|clear|unmute
 ├── handlers/
-│   ├── tracker.js       # message validity, invite tracking, credit evaluation
-│   ├── chatRewards.js   # weekly/monthly winner detection, announce, ticket
+│   ├── tracker.js       # message validity, spam checks, invite tracking, credits
+│   ├── moderation.js    # spam strikes, DM warnings, 24h mute, unmute
+│   ├── chatRewards.js   # top-3 detection, announce, per-winner tickets
 │   ├── leaderboard.js   # live invite leaderboard (build/publish/refresh)
 │   ├── interactions.js  # all buttons, modals, select menus
 │   └── scheduler.js     # sends due announcements & scheduled posts
@@ -136,17 +187,20 @@ already active. There's nothing else required to "go live."
 
 ## 5. First-Time Setup — `/admin`
 
-1. **🔧 Server Roles** — set Admin Role, Staff Role, Verified Role, and Ticket Category.
-2. **💬 Chat Reward Settings** — adjust the weekly/monthly minimums and reward text if you don't
-   want the defaults (100 msgs → $5 weekly, 400 msgs → $20 monthly).
+1. **🔧 Server Roles** — set Admin Role, Staff Role, **Verified Role**, and Ticket Category.
+   The Verified Role is required: without it **no invite can ever be validated**.
+2. **💬 Chat Reward Settings** — minimums and the per-place payout ladders (`$5, $3, $2` weekly,
+   `$25, $10, $5` monthly by default).
 3. **📋 Approved Channels** — pick which channels count toward the chat leaderboard (leave empty
    to allow every channel).
 4. **📢 Announce Channel** — where weekly/monthly winners (and optionally invite payouts) are
    posted.
-5. **🎟️ Invite Credit Tiers** — edit the `credits:reward` list if you want different numbers
+5. **🛡️ Mod Log Channel** — where spam warnings and mutes are logged, each with an Unmute button.
+6. **🎟️ Invite Credit Tiers** — edit the `credits:reward` list if you want different numbers
    than the defaults.
-6. **🔁 Toggle Public Invite Announce** — off by default, per the spec.
-7. **📊 Publish Invite Leaderboard** — optional live Top 10 inviters board.
+7. **🔁 Toggle Public Invite Announce** — off by default, per the spec.
+8. **📊 Publish Invite Leaderboard** — optional live Top 10 inviters board.
+9. **🎟️ / 💬 Publish Panels** — post the self-service invite and chat reward panels.
 
 That's it — from here everything runs automatically.
 
@@ -154,12 +208,13 @@ That's it — from here everything runs automatically.
 
 - Every qualifying message in an approved channel silently adds to a member's weekly + monthly
   count. `/progress` lets anyone check their own standing.
-- Every Monday 00:00 UTC and every 1st-of-month 00:00 UTC, the bot picks the winner, **announces
-  it publicly with the exact wording style** you specified (`🏆 Weekly Chat Winner — Congratulations
-  to @Member for finishing #1 with 1,245 valid messages! Reward: $5 USDT or $5 Discord Nitro.`),
-  opens a private ticket, and resets that period's counters for everyone.
+- Every Monday 00:00 UTC and every 1st-of-month 00:00 UTC, the bot picks the **top 3**, announces
+  them publicly in one embed, opens a private ticket per winner with that place's payout, and
+  resets the period's counters for everyone.
+- Spam is caught as it happens: the messages don't score, the member gets a DM, and the third
+  strike is a 24-hour mute that staff can lift from the mod log or with `/warnings unmute`.
 - Invite credits accrue automatically in the background (checked every 15 minutes) as invited
-  members satisfy all five validity requirements.
+  members receive the verified role. Members can audit their own numbers with `/invite`.
 - `/claim invite` is the only member-facing action needed for invite rewards.
 
 ## 7. Notes on Design Decisions
@@ -175,6 +230,13 @@ That's it — from here everything runs automatically.
 - **Credit accounting**: each `UserInvite` document tracks `grantedCredits` (lifetime earned),
   `reservedCredits` (held by open `/claim invite` tickets), and `consumedCredits` (permanently
   paid). Available balance = granted − reserved − consumed, and it can never go negative.
+- **Spam thresholds are time-bounded on purpose.** An earlier draft flagged "5 near-identical
+  messages out of the last 20" with no time limit, which would punish someone typing "ok" a few
+  times across an afternoon. Every pattern check now only looks at the last 3 minutes.
+- **Attachment-only messages are skipped entirely** before spam checks, so posting several images
+  in a row can't be read as repeating the same (empty) message.
+- **Strikes reset after a mute** rather than escalating forever. Repeat offenders are still visible
+  through `muteCount` and `totalWarnings` in `/warnings view`.
 
 ## 8. Common Issues
 
@@ -182,7 +244,12 @@ That's it — from here everything runs automatically.
 |---|---|
 | Slash commands don't show up | Run `npm run deploy`, wait a few minutes, or re-invite with `applications.commands` scope |
 | Messages aren't being counted | Enable **Message Content Intent**; check `/admin` → Approved Channels isn't excluding the channel |
-| Invite credits never appear | Enable **Server Members Intent**; make sure the verified role is set and members actually receive it; credits only post every 15 minutes |
+| Invite credits never appear | Enable **Server Members Intent**; **set the Verified Role in `/admin` → Server Roles** (without it no invite can ever be validated); credits are only granted every 15 minutes |
+| An invite shows as "fake" | Their Discord account was under 30 days old when they joined. This is judged once at join and never re-evaluated |
+| An invite shows as "rejoin" | That user had already been in the server before. Rejoins never earn credits for anyone |
+| Spam mutes never apply | The bot needs **Moderate Members** and its role must sit above the member's. The mod log shows the exact error |
+| Warnings are issued but nobody sees them | Set a **Mod Log Channel** in `/admin`. DMs also fail silently if the member has DMs closed — the log records that too |
+| `/warnings` is visible to everyone | By design — it's guarded by the configured staff role, not Discord permissions. Restrict it in Server Settings → Integrations if you prefer |
 | Tickets fail to create | Bot needs **Manage Channels** permission and a valid ticket category |
 | Winner never announced | Set an **Announce Channel** in `/admin`, or the bot falls back to the server's system channel |
 

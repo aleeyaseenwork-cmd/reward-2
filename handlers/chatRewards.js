@@ -1,6 +1,29 @@
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionsBitField } = require('discord.js');
 const { ChatStats, ChatRewardHistory, ServerConfig, RewardTicket } = require('../models');
-const { generateId, currentWeekStart, currentMonthStart } = require('../utils/helpers');
+const { generateId, currentWeekStart, currentMonthStart, placeLabel, rewardLabel, rewardsFor, ordinal } = require('../utils/helpers');
+
+const PERIODS = {
+  weekly: {
+    msgField: 'weeklyMessages',
+    daysField: 'weeklyActiveDays',
+    lastMsgField: 'weeklyLastMessageAt',
+    minMessages: config => config.weeklyMinMessages ?? 100,
+    periodStart: currentWeekStart,
+    ticketType: 'chat_weekly',
+    heading: '🏆 Weekly Chat Winners',
+    noun: 'Weekly',
+  },
+  monthly: {
+    msgField: 'monthlyMessages',
+    daysField: 'monthlyActiveDays',
+    lastMsgField: 'monthlyLastMessageAt',
+    minMessages: config => config.monthlyMinMessages ?? 400,
+    periodStart: currentMonthStart,
+    ticketType: 'chat_monthly',
+    heading: '👑 Monthly Chat Champions',
+    noun: 'Monthly',
+  },
+};
 
 // Ranks users for a period: highest message count wins; ties broken by
 // (1) more active days, (2) whoever reached the tied count first (earlier
@@ -23,7 +46,7 @@ async function findAnnounceChannel(guild, config) {
   return guild.systemChannel || guild.channels.cache.find(c => c.type === ChannelType.GuildText && c.viewable);
 }
 
-async function createWinnerTicket(client, guild, config, winnerId, type, rewardLabel) {
+async function createWinnerTicket(client, guild, config, winnerId, type, reward, place, noun) {
   const ticketId = generateId('TKT-');
   const categoryId = config?.ticketCategoryId;
   const mentionRoleId = config?.staffRoleId;
@@ -46,15 +69,16 @@ async function createWinnerTicket(client, guild, config, winnerId, type, rewardL
     return null;
   }
 
+  const label = rewardLabel(reward);
   await RewardTicket.create({
     guildId: guild.id, ticketId, channelId: channel.id, userId: winnerId,
-    type, rewardLabel, status: 'pending',
+    type, rewardLabel: label, place, status: 'pending',
   });
 
   const embed = new EmbedBuilder()
-    .setTitle(`🏆 ${type === 'chat_weekly' ? 'Weekly' : 'Monthly'} Chat Reward — ${ticketId}`)
+    .setTitle(`${placeLabel(place)} ${noun} Chat Reward — ${ticketId}`)
     .setColor('#F5A623')
-    .setDescription(`Congratulations <@${winnerId}>! Please select how you'd like to receive your reward:\n\n**Reward:** ${rewardLabel}`)
+    .setDescription(`Congratulations <@${winnerId}>! You finished **${ordinal(place)}**.\n\n**Reward:** ${label}\n\nPlease select how you'd like to receive it:`)
     .setTimestamp();
 
   const choiceRow = new ActionRowBuilder().addComponents(
@@ -67,92 +91,69 @@ async function createWinnerTicket(client, guild, config, winnerId, type, rewardL
   return { ticketId, channel };
 }
 
-async function announceWinner(channel, title, winnerId, score, rewardLabel) {
+async function announceWinners(channel, heading, winners, msgField) {
+  const lines = winners.map(({ entry, place, reward }) =>
+    `${placeLabel(place)} — <@${entry.userId}> with **${entry[msgField].toLocaleString()}** valid messages → **${rewardLabel(reward)}**`
+  );
   const embed = new EmbedBuilder()
-    .setTitle(title)
+    .setTitle(heading)
     .setColor('#F5A623')
-    .setDescription(`Congratulations to <@${winnerId}> for finishing #1 with **${score.toLocaleString()}** valid messages!\nReward: **${rewardLabel}**`)
+    .setDescription(`Congratulations to our top chatters!\n\n${lines.join('\n')}`)
+    .setFooter({ text: 'A private ticket has been opened for each winner to pick their payout.' })
     .setTimestamp();
-  await channel.send({ embeds: [embed] });
+  await channel.send({ content: winners.map(w => `<@${w.entry.userId}>`).join(' '), embeds: [embed] });
 }
 
-async function runWeeklyChatRewards(client) {
+async function runChatRewards(client, period) {
+  const spec = PERIODS[period];
+
   for (const guild of client.guilds.cache.values()) {
     try {
       const config = await ServerConfig.findOne({ guildId: guild.id }) || {};
       if (config.chatTrackingStartAt && new Date() < new Date(config.chatTrackingStartAt)) {
         continue; // engagement hasn't officially started for this guild yet
       }
-      const minMessages = config.weeklyMinMessages ?? 100;
-      const rewardLabel = config.weeklyReward || '$5 USDT or $5 Discord Nitro';
 
-      const eligible = await ChatStats.find({ guildId: guild.id, weeklyMessages: { $gte: minMessages } });
+      const rewards = rewardsFor(config, period);
+      const minMessages = spec.minMessages(config);
+      const reset = {
+        [spec.msgField]: 0,
+        [spec.daysField]: 0,
+        [spec.lastMsgField]: null,
+      };
+
+      const eligible = await ChatStats.find({ guildId: guild.id, [spec.msgField]: { $gte: minMessages } });
       if (!eligible.length) {
-        // Still reset even if nobody hit the threshold, so the new week starts clean.
-        await ChatStats.updateMany({ guildId: guild.id }, { weeklyMessages: 0, weeklyActiveDays: 0, weeklyLastMessageAt: null });
+        // Still reset even if nobody hit the threshold, so the new period starts clean.
+        await ChatStats.updateMany({ guildId: guild.id }, reset);
         continue;
       }
 
-      const ranked = rankEntries(eligible, 'weeklyMessages', 'weeklyActiveDays', 'weeklyLastMessageAt');
-      const winner = ranked[0];
+      const ranked = rankEntries(eligible, spec.msgField, spec.daysField, spec.lastMsgField);
+      const winners = ranked.slice(0, rewards.length).map((entry, i) => ({ entry, place: i + 1, reward: rewards[i] }));
       const channel = await findAnnounceChannel(guild, config);
+      if (channel) await announceWinners(channel, spec.heading, winners, spec.msgField);
 
-      let ticketId = null;
-      if (channel) {
-        await announceWinner(channel, '🏆 Weekly Chat Winner', winner.userId, winner.weeklyMessages, rewardLabel);
-        const ticket = await createWinnerTicket(client, guild, config, winner.userId, 'chat_weekly', rewardLabel);
-        ticketId = ticket?.ticketId || null;
+      const periodStart = spec.periodStart(new Date(Date.now() - 24 * 60 * 60 * 1000));
+      for (const { entry, place, reward } of winners) {
+        // Tickets are created even when there's no announce channel — a missing
+        // announcement shouldn't cost someone their payout.
+        const ticket = await createWinnerTicket(client, guild, config, entry.userId, spec.ticketType, reward, place, spec.noun);
+        const ticketId = ticket?.ticketId || null;
+        await ChatRewardHistory.create({
+          guildId: guild.id, period,
+          periodStart, periodEnd: new Date(),
+          winnerId: entry.userId, place, score: entry[spec.msgField],
+          rewardLabel: rewardLabel(reward), ticketId,
+        });
       }
 
-      await ChatRewardHistory.create({
-        guildId: guild.id, period: 'weekly',
-        periodStart: currentWeekStart(new Date(Date.now() - 24 * 60 * 60 * 1000)),
-        periodEnd: new Date(), winnerId: winner.userId, score: winner.weeklyMessages,
-        rewardLabel, ticketId,
-      });
-
-      await ChatStats.updateMany({ guildId: guild.id }, { weeklyMessages: 0, weeklyActiveDays: 0, weeklyLastMessageAt: null });
-    } catch (e) { console.error('[Weekly Chat Reward]', guild.id, e.message); }
+      await ChatStats.updateMany({ guildId: guild.id }, reset);
+    } catch (e) { console.error(`[${period} Chat Reward]`, guild.id, e.message); }
   }
 }
 
-async function runMonthlyChatRewards(client) {
-  for (const guild of client.guilds.cache.values()) {
-    try {
-      const config = await ServerConfig.findOne({ guildId: guild.id }) || {};
-      if (config.chatTrackingStartAt && new Date() < new Date(config.chatTrackingStartAt)) {
-        continue; // engagement hasn't officially started for this guild yet
-      }
-      const minMessages = config.monthlyMinMessages ?? 400;
-      const rewardLabel = config.monthlyReward || '$20 USDT or $20 Discord Nitro';
+const runWeeklyChatRewards = client => runChatRewards(client, 'weekly');
+const runMonthlyChatRewards = client => runChatRewards(client, 'monthly');
 
-      const eligible = await ChatStats.find({ guildId: guild.id, monthlyMessages: { $gte: minMessages } });
-      if (!eligible.length) {
-        await ChatStats.updateMany({ guildId: guild.id }, { monthlyMessages: 0, monthlyActiveDays: 0, monthlyLastMessageAt: null });
-        continue;
-      }
-
-      const ranked = rankEntries(eligible, 'monthlyMessages', 'monthlyActiveDays', 'monthlyLastMessageAt');
-      const winner = ranked[0];
-      const channel = await findAnnounceChannel(guild, config);
-
-      let ticketId = null;
-      if (channel) {
-        await announceWinner(channel, '👑 Monthly Chat Champion', winner.userId, winner.monthlyMessages, rewardLabel);
-        const ticket = await createWinnerTicket(client, guild, config, winner.userId, 'chat_monthly', rewardLabel);
-        ticketId = ticket?.ticketId || null;
-      }
-
-      await ChatRewardHistory.create({
-        guildId: guild.id, period: 'monthly',
-        periodStart: currentMonthStart(new Date(Date.now() - 24 * 60 * 60 * 1000)),
-        periodEnd: new Date(), winnerId: winner.userId, score: winner.monthlyMessages,
-        rewardLabel, ticketId,
-      });
-
-      await ChatStats.updateMany({ guildId: guild.id }, { monthlyMessages: 0, monthlyActiveDays: 0, monthlyLastMessageAt: null });
-    } catch (e) { console.error('[Monthly Chat Reward]', guild.id, e.message); }
-  }
-}
-
-module.exports = { runWeeklyChatRewards, runMonthlyChatRewards, createWinnerTicket };
+module.exports = { runWeeklyChatRewards, runMonthlyChatRewards, runChatRewards, createWinnerTicket };
