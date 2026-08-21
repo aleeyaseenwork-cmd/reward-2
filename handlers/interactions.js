@@ -3,11 +3,14 @@ const {
   ModalBuilder, TextInputBuilder, TextInputStyle,
   ChannelSelectMenuBuilder, ChannelType, PermissionsBitField
 } = require('discord.js');
-const { isAdmin, isStaff, generateId, nextMonday } = require('../utils/helpers');
+const {
+  isAdmin, isStaff, generateId, nextMonday, placeLabel, rewardLabel, rewardsFor,
+} = require('../utils/helpers');
 const {
   ServerConfig, InviteTierConfig, UserInvite, RewardTicket, Announcement, ScheduledPost,
 } = require('../models');
 const { publishLeaderboard } = require('./leaderboard');
+const { unmuteMember } = require('./moderation');
 
 const state = new Map();
 function getState(userId) { return state.get(userId) || {}; }
@@ -129,7 +132,7 @@ async function handleInteraction(interaction, client) {
   // just explains that and points the member at their live progress instead.
   if (id === 'panel_chat_apply') {
     return safeReply(interaction, {
-      content: '🏆 Chat rewards are awarded **automatically** — the top performer each week/month is announced and given a private ticket, no application needed.\n\nUse **📊 My Progress** to see exactly how close you are to winning.',
+      content: '🏆 Chat rewards are awarded **automatically** — the top 3 chatters each week and month are announced and given a private ticket, no application needed.\n\nUse **📊 Check Your Progress** to see exactly where you rank.',
     });
   }
 
@@ -186,8 +189,10 @@ async function handleInteraction(interaction, client) {
     ticket.choice = choice;
     await ticket.save();
 
+    const periodNoun = ticket.type === 'chat_weekly' ? 'Weekly' : 'Monthly';
+    const heading = ticket.place ? `${placeLabel(ticket.place)} ${periodNoun}` : periodNoun;
     const embed = new EmbedBuilder()
-      .setTitle(`🏆 ${ticket.type === 'chat_weekly' ? 'Weekly' : 'Monthly'} Chat Reward — ${ticketId}`)
+      .setTitle(`${heading} Chat Reward — ${ticketId}`)
       .setColor('#F5A623')
       .setDescription(`<@${userId}> chose **${choice === 'nitro' ? 'Discord Nitro' : 'USDT'}**.\n\n**Reward:** ${ticket.rewardLabel}\n\nStaff: please send the reward, then mark this ticket as paid.`)
       .setTimestamp();
@@ -299,8 +304,25 @@ async function handleInteraction(interaction, client) {
     return safeReply(interaction, { content: '✅ Ticket kept open.' });
   }
 
+  // ── UNMUTE FROM THE MOD LOG (staff only) ─────────────────────────────────────
+  if (id.startsWith('mod_unmute_')) {
+    const targetId = id.replace('mod_unmute_', '');
+    const member = await resolveMember(interaction);
+    if (!member || !await isStaff(member, guildId)) {
+      return safeReply(interaction, { content: '❌ Only staff can unmute members.' });
+    }
+    const result = await unmuteMember(interaction.guild, targetId);
+    if (!result.ok) return safeReply(interaction, { content: `❌ ${result.reason}` });
+
+    await interaction.message.edit({ components: [] }).catch(() => {});
+    return safeReply(interaction, {
+      content: `🔊 <@${targetId}> has been unmuted and their warnings cleared by <@${userId}>.` +
+        (result.wasInServer ? '' : ' (They are no longer in the server — warnings cleared anyway.)'),
+    });
+  }
+
   // ── ADMIN GATE ────────────────────────────────────────────────────────────────
-  const ADMIN_PREFIXES = ['admin_', 'modal_admin_config', 'modal_chat_config', 'modal_invite_tiers', 'modal_chat_start_custom', 'modal_add_credits', 'announce_channel_config_select', 'approved_channels_select', 'publish_invite_panel_', 'publish_chat_panel_', 'announce_', 'sched_post_', 'leaderboard_', 'modal_announce', 'modal_schedule_post'];
+  const ADMIN_PREFIXES = ['admin_', 'modal_admin_config', 'modal_chat_config', 'modal_invite_tiers', 'modal_chat_start_custom', 'modal_add_credits', 'announce_channel_config_select', 'approved_channels_select', 'modlog_channel_select', 'publish_invite_panel_', 'publish_chat_panel_', 'announce_', 'sched_post_', 'leaderboard_', 'modal_announce', 'modal_schedule_post'];
   if (ADMIN_PREFIXES.some(p => id.startsWith(p))) {
     const member = await resolveMember(interaction);
     if (!member || !await isAdmin(member, guildId)) {
@@ -334,30 +356,62 @@ async function handleInteraction(interaction, client) {
     return safeReply(interaction, { content: '✅ Server configuration saved.' });
   }
 
-  // ── CHAT REWARD THRESHOLDS ────────────────────────────────────────────────────
+  // ── CHAT REWARD THRESHOLDS + PLACE PAYOUTS ───────────────────────────────────
   if (id === 'admin_chat_config') {
     const config = await ServerConfig.findOne({ guildId }) || {};
     const modal = new ModalBuilder().setCustomId('modal_chat_config').setTitle('Chat Leaderboard Rewards');
     modal.addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('weekly_min').setLabel('Weekly Minimum Valid Messages').setStyle(TextInputStyle.Short).setRequired(true).setValue(String(config.weeklyMinMessages ?? 100))),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('weekly_reward').setLabel('Weekly Reward').setStyle(TextInputStyle.Short).setRequired(true).setValue(config.weeklyReward || '$5 USDT or $5 Discord Nitro')),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('weekly_rewards').setLabel('Weekly payouts, 1st to last').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('$5, $3, $2').setValue(rewardsFor(config, 'weekly').join(', '))),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('monthly_min').setLabel('Monthly Minimum Valid Messages').setStyle(TextInputStyle.Short).setRequired(true).setValue(String(config.monthlyMinMessages ?? 400))),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('monthly_reward').setLabel('Monthly Reward').setStyle(TextInputStyle.Short).setRequired(true).setValue(config.monthlyReward || '$20 USDT or $20 Discord Nitro')),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('monthly_rewards').setLabel('Monthly payouts, 1st to last').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('$25, $10, $5').setValue(rewardsFor(config, 'monthly').join(', '))),
     );
     return interaction.showModal(modal);
   }
 
   if (id === 'modal_chat_config') {
+    const parsePayouts = raw => raw.split(',').map(s => s.trim()).filter(Boolean);
+    const weeklyRewards = parsePayouts(interaction.fields.getTextInputValue('weekly_rewards'));
+    const monthlyRewards = parsePayouts(interaction.fields.getTextInputValue('monthly_rewards'));
+    if (!weeklyRewards.length || !monthlyRewards.length) {
+      return safeReply(interaction, { content: '❌ Payouts can\'t be empty. Enter them comma-separated, best place first — for example `$5, $3, $2`.' });
+    }
+
     const weeklyMin = parseInt(interaction.fields.getTextInputValue('weekly_min')) || 100;
     const monthlyMin = parseInt(interaction.fields.getTextInputValue('monthly_min')) || 400;
-    const weeklyReward = interaction.fields.getTextInputValue('weekly_reward');
-    const monthlyReward = interaction.fields.getTextInputValue('monthly_reward');
     await ServerConfig.findOneAndUpdate(
       { guildId },
-      { guildId, weeklyMinMessages: weeklyMin, monthlyMinMessages: monthlyMin, weeklyReward, monthlyReward },
+      { guildId, weeklyMinMessages: weeklyMin, monthlyMinMessages: monthlyMin, weeklyRewards, monthlyRewards },
       { upsert: true }
     );
-    return safeReply(interaction, { content: '✅ Chat leaderboard reward settings saved.' });
+    const summarise = list => list.map((r, i) => `${placeLabel(i + 1)} → **${r}**`).join(', ');
+    return safeReply(interaction, {
+      content: `✅ Chat reward settings saved.\n\n**Weekly** (min. ${weeklyMin} msgs): ${summarise(weeklyRewards)}\n**Monthly** (min. ${monthlyMin} msgs): ${summarise(monthlyRewards)}`,
+    });
+  }
+
+  // ── SPAM DETECTION + MOD LOG ─────────────────────────────────────────────────
+  if (id === 'admin_toggle_spam') {
+    const config = await ServerConfig.findOne({ guildId }) || {};
+    const newValue = !(config.spamDetectionEnabled !== false);
+    await ServerConfig.findOneAndUpdate({ guildId }, { guildId, spamDetectionEnabled: newValue }, { upsert: true });
+    return safeReply(interaction, {
+      content: `✅ Spam detection is now **${newValue ? 'ENABLED' : 'DISABLED'}**.` +
+        (newValue ? ' Members who farm messages get a DM warning, and a 24-hour mute on the third strike.' : ''),
+    });
+  }
+
+  if (id === 'admin_set_modlog') {
+    const embed = new EmbedBuilder().setTitle('🛡️ Set Mod Log Channel').setColor('#5865F2')
+      .setDescription('Spam warnings and mutes will be logged here, each with an **Unmute** button for staff.');
+    const row = new ActionRowBuilder().addComponents(new ChannelSelectMenuBuilder().setCustomId('modlog_channel_select').setPlaceholder('Select channel').addChannelTypes(ChannelType.GuildText));
+    return safeReply(interaction, { embeds: [embed], components: [row] });
+  }
+
+  if (id === 'modlog_channel_select') {
+    const channelId = interaction.values[0];
+    await ServerConfig.findOneAndUpdate({ guildId }, { guildId, modLogChannelId: channelId }, { upsert: true });
+    return interaction.update({ content: `✅ Spam warnings and mutes will be logged in <#${channelId}>.`, embeds: [], components: [] });
   }
 
   // ── ANNOUNCE CHANNEL (used for weekly/monthly winners + optional invite claims) ─
@@ -643,6 +697,8 @@ async function handleInteraction(interaction, client) {
     const ch = interaction.guild.channels.cache.get(channelId);
     if (!ch) return interaction.update({ content: '❌ Channel not found.', embeds: [], components: [] });
 
+    const config = await ServerConfig.findOne({ guildId }) || {};
+    const verifiedRole = config.verifiedRoleId ? `<@&${config.verifiedRoleId}>` : 'the **member** role';
     const tiers = await getTiers(guildId);
     const panelEmbed = new EmbedBuilder()
       .setTitle('🎟️ Invite Rewards')
@@ -652,7 +708,16 @@ async function handleInteraction(interaction, client) {
         'or use the buttons at the bottom to check your progress.\n\n' +
         tiers.map(t => `**${t.reward}** — ${t.credits} credits`).join('\n')
       )
-      .setFooter({ text: 'An invite becomes valid once the member verifies, stays 7+ days, and their account is 30+ days old.' });
+      .addFields({
+        name: '✅ What counts as a valid invite',
+        value:
+          `• The member must be **verified** — they need ${verifiedRole}\n` +
+          '• Their Discord account must have been **30+ days old** when they joined\n' +
+          '• They must still be in the server\n\n' +
+          '**Never counted:** accounts under 30 days old (logged as **fake invites**) and anyone **rejoining** the server.',
+        inline: false,
+      })
+      .setFooter({ text: 'Check your real, fake, and rejoined invites any time with /invite' });
 
     // One button per tier (chunked into rows of 5), plus a final row for progress/apply.
     const tierButtons = tiers.slice(0, 20).map(t =>
@@ -687,18 +752,45 @@ async function handleInteraction(interaction, client) {
     const config = await ServerConfig.findOne({ guildId }) || {};
     const weeklyMin = config.weeklyMinMessages ?? 100;
     const monthlyMin = config.monthlyMinMessages ?? 400;
-    const weeklyReward = config.weeklyReward || '$5 USDT or $5 Discord Nitro';
-    const monthlyReward = config.monthlyReward || '$20 USDT or $20 Discord Nitro';
+    const payoutLines = period => rewardsFor(config, period)
+      .map((amount, i) => `${placeLabel(i + 1)} — **${rewardLabel(amount)}**`).join('\n');
 
     const panelEmbed = new EmbedBuilder()
       .setTitle('💬 Chat Rewards')
       .setColor('#F5A623')
       .setDescription(
-        `Only the **single most active member** wins each period — not everyone who hits the minimum!\n\n` +
-        `🥇 **Weekly Winner** — must reach ${weeklyMin}+ valid messages to qualify → **${weeklyReward}** (resets every Monday 00:00 UTC)\n` +
-        `👑 **Monthly Winner** — must reach ${monthlyMin}+ valid messages to qualify → **${monthlyReward}** (resets 1st of the month)\n\n` +
-        `The minimum just makes you *eligible* — the top chatter above that line takes the reward. Winners are picked and announced automatically — check your progress below to see where you stand.`
-      );
+        'Chat normally, climb the leaderboard, get paid. The **top 3 most active members** are rewarded ' +
+        'every week and every month — winners are picked and announced automatically, so there\'s nothing to apply for.'
+      )
+      .addFields(
+        {
+          name: `🗓️ Weekly — resets every Monday 00:00 UTC`,
+          value: `${payoutLines('weekly')}\n\n*Qualify with ${weeklyMin}+ valid messages.*`,
+          inline: true,
+        },
+        {
+          name: `📅 Monthly — resets on the 1st`,
+          value: `${payoutLines('monthly')}\n\n*Qualify with ${monthlyMin}+ valid messages.*`,
+          inline: true,
+        },
+        {
+          name: '✅ What counts as a valid message',
+          value:
+            '• At least 5 real characters — not just emojis, symbols or mentions\n' +
+            '• Not a repeat of something you just said\n' +
+            '• Maximum one counted message every 15 seconds\n' +
+            '• Deleted messages lose their point',
+          inline: false,
+        },
+        {
+          name: '🚫 Spam is not tolerated',
+          value:
+            'Flooding the chat, repeating yourself, or recycling the same few phrases to farm the leaderboard is **detected automatically**.\n' +
+            'Those messages **never count**, and you\'ll get a DM warning. **Three warnings = a 24-hour mute.**',
+          inline: false,
+        },
+      )
+      .setFooter({ text: 'The minimum only makes you eligible — your rank decides your reward.' });
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('panel_progress').setLabel('📊 Check Your Progress').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId('panel_chat_apply').setLabel('✋ Apply for Reward').setStyle(ButtonStyle.Primary),
@@ -715,10 +807,21 @@ async function handleInteraction(interaction, client) {
     const embed = new EmbedBuilder().setTitle('⚙️ Current Settings').setColor('#5865F2').addFields(
       { name: 'Roles', value: `Admin: ${config.adminRoleId ? `<@&${config.adminRoleId}>` : 'Not set'}\nStaff: ${config.staffRoleId ? `<@&${config.staffRoleId}>` : 'Not set'}\nVerified: ${config.verifiedRoleId ? `<@&${config.verifiedRoleId}>` : 'Not set'}`, inline: true },
       { name: 'Channels', value: `Ticket Category: ${config.ticketCategoryId || 'Not set'}\nAnnounce: ${config.chatAnnounceChannelId ? `<#${config.chatAnnounceChannelId}>` : 'Not set'}\nApproved: ${config.approvedChannelIds?.length ? config.approvedChannelIds.map(c => `<#${c}>`).join(', ') : 'All channels'}`, inline: true },
-      { name: 'Chat Rewards', value: `Weekly: ${config.weeklyMinMessages ?? 100}+ msgs → ${config.weeklyReward || '$5 USDT or $5 Discord Nitro'} (single top winner)\nMonthly: ${config.monthlyMinMessages ?? 400}+ msgs → ${config.monthlyReward || '$20 USDT or $20 Discord Nitro'} (single top winner)`, inline: false },
+      {
+        name: 'Chat Rewards',
+        value:
+          `**Weekly** (min. ${config.weeklyMinMessages ?? 100} msgs): ${rewardsFor(config, 'weekly').map((r, i) => `${placeLabel(i + 1)} ${r}`).join(' · ')}\n` +
+          `**Monthly** (min. ${config.monthlyMinMessages ?? 400} msgs): ${rewardsFor(config, 'monthly').map((r, i) => `${placeLabel(i + 1)} ${r}`).join(' · ')}`,
+        inline: false,
+      },
       { name: 'Engagement Start Time', value: config.chatTrackingStartAt ? new Date(config.chatTrackingStartAt).toUTCString() : 'Immediate (no restriction)', inline: false },
       { name: 'Invite Credit Tiers', value: tiers.map(t => `${t.credits} credits → ${t.reward}`).join('\n'), inline: false },
       { name: 'Public Invite Announcements', value: config.publicInviteAnnounce ? 'Enabled' : 'Disabled', inline: false },
+      {
+        name: 'Spam Detection',
+        value: `${config.spamDetectionEnabled === false ? 'Disabled' : 'Enabled'} — 3 warnings = 24h mute\nMod log: ${config.modLogChannelId ? `<#${config.modLogChannelId}>` : 'Not set'}`,
+        inline: false,
+      },
     );
     return safeReply(interaction, { embeds: [embed] });
   }

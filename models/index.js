@@ -11,10 +11,13 @@ const ServerConfigSchema = new mongoose.Schema({
   chatAnnounceChannelId: String,                        // where weekly/monthly winners are announced
   chatTrackingStartAt: { type: Date, default: null },   // messages before this time don't count (avoids a broken partial week)
   publicInviteAnnounce: { type: Boolean, default: false }, // invite claims stay private unless enabled
+  modLogChannelId: String,                              // spam warnings and mutes are logged here
+  spamDetectionEnabled: { type: Boolean, default: true },
   weeklyMinMessages: { type: Number, default: 100 },
   monthlyMinMessages: { type: Number, default: 400 },
-  weeklyReward: { type: String, default: '$5 USDT or $5 Discord Nitro' },
-  monthlyReward: { type: String, default: '$20 USDT or $20 Discord Nitro' },
+  // Payout per finishing place, best first. Length decides how many places are paid.
+  weeklyRewards: { type: [String], default: ['$5', '$3', '$2'] },
+  monthlyRewards: { type: [String], default: ['$25', '$10', '$5'] },
   timezone: { type: String, default: 'UTC' },
 });
 const ServerConfig = mongoose.model('ServerConfig', ServerConfigSchema);
@@ -31,7 +34,10 @@ const ChatStatsSchema = new mongoose.Schema({
   lastValidMessageAt: Date,        // 15s rate-limit gate
   weeklyLastMessageAt: Date,       // tie-break proxy for "reached the score first"
   monthlyLastMessageAt: Date,
-  recentMessages: { type: [String], default: [] }, // last few contents, for repeat-post detection
+  // Rolling window of every recent message (counted or not) — powers both the
+  // repeat-post rule and spam detection.
+  recentMessages: { type: [String], default: [] },
+  recentMessageAt: { type: [Date], default: [] },
 });
 ChatStatsSchema.index({ guildId: 1, userId: 1 }, { unique: true });
 const ChatStats = mongoose.model('ChatStats', ChatStatsSchema);
@@ -47,19 +53,36 @@ const CountedMessageSchema = new mongoose.Schema({
 });
 const CountedMessage = mongoose.model('CountedMessage', CountedMessageSchema);
 
-// Frozen snapshot of each weekly/monthly winner, kept permanently for history.
+// Frozen snapshot of each weekly/monthly placing, kept permanently for history.
 const ChatRewardHistorySchema = new mongoose.Schema({
   guildId: String,
   period: { type: String, enum: ['weekly', 'monthly'] },
   periodStart: Date,
   periodEnd: Date,
   winnerId: String,
+  place: { type: Number, default: 1 },
   score: Number,
   rewardLabel: String,
   ticketId: String,
   createdAt: { type: Date, default: Date.now },
 });
 const ChatRewardHistory = mongoose.model('ChatRewardHistory', ChatRewardHistorySchema);
+
+// ── SPAM WARNINGS ─────────────────────────────────────────────
+// Three strikes inside the decay window earns a 24h timeout. The counter resets
+// after a mute so the next offence starts the ladder again.
+const UserWarningSchema = new mongoose.Schema({
+  guildId: String,
+  userId: String,
+  count: { type: Number, default: 0 },
+  totalWarnings: { type: Number, default: 0 },
+  muteCount: { type: Number, default: 0 },
+  lastWarnedAt: Date,
+  mutedUntil: Date,
+  history: [{ reason: String, at: Date, _id: false }],
+});
+UserWarningSchema.index({ guildId: 1, userId: 1 }, { unique: true });
+const UserWarning = mongoose.model('UserWarning', UserWarningSchema);
 
 // ── INVITE CREDIT TIERS (configurable, seeded with sensible defaults) ─────
 const InviteTierConfigSchema = new mongoose.Schema({
@@ -89,10 +112,12 @@ const UserInviteSchema = new mongoose.Schema({
     leftAt: Date,
     verified: { type: Boolean, default: false },
     verifiedAt: Date,
-    messageCount: { type: Number, default: 0 },
+    messageCount: { type: Number, default: 0 }, // informational only — not a credit requirement
     accountCreatedAt: Date,
     creditGranted: { type: Boolean, default: false },
     valid: { type: Boolean, default: true }, // still in the server
+    fake: { type: Boolean, default: false },   // account was under 30 days old at join — judged once, never re-evaluated
+    rejoin: { type: Boolean, default: false }, // this user had already been tracked in this guild
   }],
   inviteCode: String,
   updatedAt: { type: Date, default: Date.now },
@@ -109,6 +134,7 @@ const RewardTicketSchema = new mongoose.Schema({
   userId: String,
   type: { type: String, enum: ['chat_weekly', 'chat_monthly', 'invite'] },
   rewardLabel: String,
+  place: Number,                 // chat tickets only — 1st, 2nd or 3rd
   tierCredits: Number,           // invite tickets only — credits reserved for this claim
   choice: { type: String, enum: ['nitro', 'usdt', null], default: null },
   status: { type: String, enum: ['pending', 'paid', 'cancelled'], default: 'pending' },
@@ -158,5 +184,5 @@ const LeaderboardConfig = mongoose.model('LeaderboardConfig', LeaderboardConfigS
 
 module.exports = {
   ServerConfig, ChatStats, CountedMessage, ChatRewardHistory, InviteTierConfig,
-  UserInvite, RewardTicket, Announcement, ScheduledPost, LeaderboardConfig,
+  UserInvite, RewardTicket, Announcement, ScheduledPost, LeaderboardConfig, UserWarning,
 };
