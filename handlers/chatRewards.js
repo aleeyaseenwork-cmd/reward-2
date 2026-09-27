@@ -110,6 +110,7 @@ async function runChatRewards(client, period) {
   for (const guild of client.guilds.cache.values()) {
     try {
       const config = await ServerConfig.findOne({ guildId: guild.id }) || {};
+      if (config.rewardsEnabled === false) continue; // rewards paused — no payouts while off
       if (config.chatTrackingStartAt && new Date() < new Date(config.chatTrackingStartAt)) {
         continue; // engagement hasn't officially started for this guild yet
       }

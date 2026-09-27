@@ -19,6 +19,7 @@ module.exports = {
       .setColor('#5865F2')
       .setDescription('Configure the chat leaderboard, invite credit tiers, announcements, and server roles.')
       .addFields(
+        { name: 'Rewards System', value: config.rewardsEnabled === false ? '🔴 OFF (chat + invite rewards paused)' : '🟢 ON', inline: true },
         { name: 'Roles', value: `Admin: ${config.adminRoleId ? `<@&${config.adminRoleId}>` : 'Not set'}\nStaff: ${config.staffRoleId ? `<@&${config.staffRoleId}>` : 'Not set'}\nVerified: ${config.verifiedRoleId ? `<@&${config.verifiedRoleId}>` : 'Not set'}`, inline: true },
         { name: 'Announce Channel', value: config.chatAnnounceChannelId ? `<#${config.chatAnnounceChannelId}>` : 'Not set', inline: true },
         { name: 'Public Invite Announce', value: config.publicInviteAnnounce ? 'Enabled ✅' : 'Disabled ❌', inline: true },
@@ -51,7 +52,14 @@ module.exports = {
       new ButtonBuilder().setCustomId('admin_publish_chat_panel').setLabel('💬 Publish Chat Reward Panel').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId('admin_toggle_spam').setLabel('🚫 Toggle Spam Detection').setStyle(ButtonStyle.Secondary),
     );
+    const rewardsOn = config.rewardsEnabled !== false;
+    const row5 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('admin_toggle_rewards')
+        .setLabel(rewardsOn ? '🔴 Turn OFF Chat + Invite Rewards' : '🟢 Turn ON Chat + Invite Rewards')
+        .setStyle(rewardsOn ? ButtonStyle.Danger : ButtonStyle.Success),
+    );
 
-    return interaction.editReply({ embeds: [embed], components: [row1, row2, row3, row4] });
+    return interaction.editReply({ embeds: [embed], components: [row1, row2, row3, row4, row5] });
   }
 };
