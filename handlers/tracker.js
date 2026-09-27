@@ -37,7 +37,7 @@ async function handleMemberJoin(member, client) {
     if (!inviterId || inviterId === member.id) return;
 
     const config = await ServerConfig.findOne({ guildId });
-    if (config?.rewardsEnabled === false) return; // rewards paused — don't track invite credits while off
+    if (config?.inviteRewardsEnabled === false) return; // invite rewards paused — don't track invite credits while off
 
     // Anyone already tracked in this guild is a rejoin. It's still recorded so
     // /invite can show it, but it can never earn a credit for anyone.
@@ -142,7 +142,7 @@ async function handleMessage(message) {
 
   try {
     const config = await ServerConfig.findOne({ guildId });
-    if (config?.rewardsEnabled === false) return; // rewards paused — chat messages don't count
+    if (config?.chatRewardsEnabled === false) return; // chat rewards paused — messages don't count
     if (config?.approvedChannelIds?.length && !config.approvedChannelIds.includes(message.channel.id)) {
       return; // not an approved channel
     }
@@ -256,7 +256,7 @@ async function evaluateInviteCredits(client) {
 
     for (const [guildId, guildDocs] of byGuild) {
       const config = await ServerConfig.findOne({ guildId });
-      if (config?.rewardsEnabled === false) continue; // rewards paused — don't grant credits while off
+      if (config?.inviteRewardsEnabled === false) continue; // invite rewards paused — don't grant credits while off
       const verifiedRoleId = config?.verifiedRoleId;
       // Without a configured verified role there is no way to validate anyone.
       if (!verifiedRoleId) continue;

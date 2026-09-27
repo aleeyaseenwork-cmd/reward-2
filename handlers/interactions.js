@@ -4,7 +4,7 @@ const {
   ChannelSelectMenuBuilder, ChannelType, PermissionsBitField
 } = require('discord.js');
 const {
-  isAdmin, isStaff, rewardsEnabled, generateId, nextMonday, placeLabel, rewardLabel, rewardsFor,
+  isAdmin, isStaff, chatRewardsEnabled, inviteRewardsEnabled, generateId, nextMonday, placeLabel, rewardLabel, rewardsFor,
 } = require('../utils/helpers');
 const {
   ServerConfig, InviteTierConfig, UserInvite, RewardTicket, Announcement, ScheduledPost,
@@ -108,8 +108,8 @@ async function handleInteraction(interaction, client) {
   // Direct tier button on the invite panel (e.g. "$3 - 20 Invites") — skips the
   // select-menu step and jumps straight to the Nitro/USDT choice.
   if (id.startsWith('panel_claim_tier_')) {
-    if (!await rewardsEnabled(guildId)) {
-      return safeReply(interaction, { content: '🔌 Rewards are currently turned **off** by an admin. Please check back later.' });
+    if (!await inviteRewardsEnabled(guildId)) {
+      return safeReply(interaction, { content: '🔌 Invite rewards are currently turned **off** by an admin. Please check back later.' });
     }
     const credits = parseInt(id.replace('panel_claim_tier_', ''), 10);
     const tiers = await getTiers(guildId);
@@ -141,8 +141,8 @@ async function handleInteraction(interaction, client) {
 
   // ── INVITE CLAIM: tier selected → ask Nitro or USDT ──────────────────────────
   if (id === 'invite_claim_tier_select') {
-    if (!await rewardsEnabled(guildId)) {
-      return interaction.update({ content: '🔌 Rewards are currently turned **off** by an admin. Please check back later.', embeds: [], components: [] });
+    if (!await inviteRewardsEnabled(guildId)) {
+      return interaction.update({ content: '🔌 Invite rewards are currently turned **off** by an admin. Please check back later.', embeds: [], components: [] });
     }
     const credits = parseInt(interaction.values[0], 10);
     const tiers = await getTiers(guildId);
@@ -160,8 +160,8 @@ async function handleInteraction(interaction, client) {
 
   // ── INVITE CLAIM: payout choice → recheck eligibility, reserve, open ticket ──
   if (id.startsWith('invite_claim_choice_')) {
-    if (!await rewardsEnabled(guildId)) {
-      return safeReply(interaction, { content: '🔌 Rewards are currently turned **off** by an admin. Please check back later.' });
+    if (!await inviteRewardsEnabled(guildId)) {
+      return safeReply(interaction, { content: '🔌 Invite rewards are currently turned **off** by an admin. Please check back later.' });
     }
     const rest = id.replace('invite_claim_choice_', '');
     const [choice, creditsStr] = rest.split('_');
@@ -399,15 +399,27 @@ async function handleInteraction(interaction, client) {
     });
   }
 
-  // ── MASTER REWARDS SWITCH (chat rewards + invite rewards, all at once) ───────
-  if (id === 'admin_toggle_rewards') {
+  // ── CHAT REWARDS SWITCH ────────────────────────────────────────────────────────
+  if (id === 'admin_toggle_chat_rewards') {
     const config = await ServerConfig.findOne({ guildId }) || {};
-    const newValue = !(config.rewardsEnabled !== false);
-    await ServerConfig.findOneAndUpdate({ guildId }, { guildId, rewardsEnabled: newValue }, { upsert: true });
+    const newValue = !(config.chatRewardsEnabled !== false);
+    await ServerConfig.findOneAndUpdate({ guildId }, { guildId, chatRewardsEnabled: newValue }, { upsert: true });
     return safeReply(interaction, {
       content: newValue
-        ? '🟢 Rewards are now **ON**. Chat message tracking and invite credit tracking have resumed with all of your existing settings.'
-        : '🔴 Rewards are now **OFF**. Chat messages stop counting, invite credits stop being tracked/granted, weekly/monthly payouts are paused, and new claims are blocked — nothing is being reset, so turning this back on picks up exactly where it left off.',
+        ? '🟢 Chat rewards are now **ON**. Messages count again and weekly/monthly payouts have resumed with all of your existing settings.'
+        : '🔴 Chat rewards are now **OFF**. Messages stop counting and weekly/monthly payouts are paused — nothing is being reset, so turning this back on picks up exactly where it left off.',
+    });
+  }
+
+  // ── INVITE REWARDS SWITCH ──────────────────────────────────────────────────────
+  if (id === 'admin_toggle_invite_rewards') {
+    const config = await ServerConfig.findOne({ guildId }) || {};
+    const newValue = !(config.inviteRewardsEnabled !== false);
+    await ServerConfig.findOneAndUpdate({ guildId }, { guildId, inviteRewardsEnabled: newValue }, { upsert: true });
+    return safeReply(interaction, {
+      content: newValue
+        ? '🟢 Invite rewards are now **ON**. Invite credit tracking and claims have resumed with all of your existing settings.'
+        : '🔴 Invite rewards are now **OFF**. New invites stop earning credits and `/claim invite` is blocked — nothing is being reset, so turning this back on picks up exactly where it left off.',
     });
   }
 
@@ -826,7 +838,7 @@ async function handleInteraction(interaction, client) {
     const config = await ServerConfig.findOne({ guildId }) || {};
     const tiers = await getTiers(guildId);
     const embed = new EmbedBuilder().setTitle('⚙️ Current Settings').setColor('#5865F2').addFields(
-      { name: 'Rewards System', value: config.rewardsEnabled === false ? '🔴 OFF (chat + invite rewards paused)' : '🟢 ON', inline: false },
+      { name: 'Rewards System', value: `Chat: ${config.chatRewardsEnabled === false ? '🔴 OFF' : '🟢 ON'}\nInvite: ${config.inviteRewardsEnabled === false ? '🔴 OFF' : '🟢 ON'}`, inline: false },
       { name: 'Roles', value: `Admin: ${config.adminRoleId ? `<@&${config.adminRoleId}>` : 'Not set'}\nStaff: ${config.staffRoleId ? `<@&${config.staffRoleId}>` : 'Not set'}\nVerified: ${config.verifiedRoleId ? `<@&${config.verifiedRoleId}>` : 'Not set'}`, inline: true },
       { name: 'Channels', value: `Ticket Category: ${config.ticketCategoryId || 'Not set'}\nAnnounce: ${config.chatAnnounceChannelId ? `<#${config.chatAnnounceChannelId}>` : 'Not set'}\nApproved: ${config.approvedChannelIds?.length ? config.approvedChannelIds.map(c => `<#${c}>`).join(', ') : 'All channels'}`, inline: true },
       {

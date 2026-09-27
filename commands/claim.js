@@ -1,7 +1,7 @@
 const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder } = require('discord.js');
 const { UserInvite } = require('../models');
 const { getTiers } = require('../handlers/interactions');
-const { rewardsEnabled } = require('../utils/helpers');
+const { inviteRewardsEnabled } = require('../utils/helpers');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -13,8 +13,8 @@ module.exports = {
     const guildId = interaction.guild.id;
     const userId = interaction.user.id;
 
-    if (!await rewardsEnabled(guildId)) {
-      return interaction.editReply({ content: '🔌 Rewards are currently turned **off** by an admin. Please check back later.' });
+    if (!await inviteRewardsEnabled(guildId)) {
+      return interaction.editReply({ content: '🔌 Invite rewards are currently turned **off** by an admin. Please check back later.' });
     }
 
     const doc = await UserInvite.findOne({ guildId, userId });

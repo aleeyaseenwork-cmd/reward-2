@@ -3,11 +3,11 @@ const mongoose = require('mongoose');
 // ── SERVER CONFIG ─────────────────────────────────────────────
 const ServerConfigSchema = new mongoose.Schema({
   guildId: { type: String, unique: true },
-  // Master switch — when false, chat-message tracking/payouts and invite-credit
-  // tracking/claiming are fully paused. Everything else (roles, channels,
-  // tiers, payout amounts, etc.) is untouched and picks back up as-is when
-  // turned back on.
-  rewardsEnabled: { type: Boolean, default: true },
+  // Master switches — chat and invite rewards can each be turned off
+  // independently. Everything else (roles, channels, tiers, payout amounts,
+  // etc.) is untouched and picks back up as-is when turned back on.
+  chatRewardsEnabled: { type: Boolean, default: true },
+  inviteRewardsEnabled: { type: Boolean, default: true },
   adminRoleId: String,
   staffRoleId: String,
   verifiedRoleId: String,

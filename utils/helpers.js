@@ -24,13 +24,20 @@ async function isStaff(member, guildId) {
   return false;
 }
 
-// Master switch check — chat and invite rewards are both gated behind this.
-// Defaults to true (matches the schema default) so a missing config never
-// accidentally disables a fresh guild.
-async function rewardsEnabled(guildId) {
+// Master switch checks — chat and invite rewards are gated independently.
+// Both default to true (matches the schema default) so a missing config
+// never accidentally disables a fresh guild.
+async function chatRewardsEnabled(guildId) {
   try {
     const config = await ServerConfig.findOne({ guildId });
-    return config?.rewardsEnabled !== false;
+    return config?.chatRewardsEnabled !== false;
+  } catch (_) { return true; }
+}
+
+async function inviteRewardsEnabled(guildId) {
+  try {
+    const config = await ServerConfig.findOne({ guildId });
+    return config?.inviteRewardsEnabled !== false;
   } catch (_) { return true; }
 }
 
@@ -275,7 +282,7 @@ function formatCountdown(targetDate) {
 }
 
 module.exports = {
-  generateId, isAdmin, isStaff, rewardsEnabled, progressBar, parseColor,
+  generateId, isAdmin, isStaff, chatRewardsEnabled, inviteRewardsEnabled, progressBar, parseColor,
   isValidChatMessage, todayUTC, currentWeekStart, currentMonthStart, daysBetween,
   nextMonday, nextMonthStart, formatUSTime, formatCountdown,
   isFakeAccount, isFakeInvite, computeInviteStats, creditBalance,
