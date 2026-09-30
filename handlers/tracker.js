@@ -3,6 +3,7 @@ const {
   isValidChatMessage, todayUTC, isFakeAccount, isFakeInvite, detectSpam, isStaff, SPAM_HISTORY_SIZE,
 } = require('../utils/helpers');
 const { recordSpamStrike } = require('./moderation');
+const { autoOpenForUser, sweepAllGuilds } = require('./inviteAuto');
 
 const inviteCache = new Map();
 
@@ -288,10 +289,17 @@ async function evaluateInviteCredits(client) {
           doc.markModified('invitedUsers');
           doc.updatedAt = new Date();
           await doc.save();
+          // Credits just went up, so check this user against the current tiers right away.
+          const g = client.guilds.cache.get(guildId);
+          if (g) await autoOpenForUser(client, g, doc.userId).catch(e => console.error('[Auto Ticket]', e.message));
         }
       }
     }
   } catch (e) { console.error('[Credit Eval]', e.message); }
+
+  // Safety net: anyone sitting on enough credits for the current tiers
+  // (config changed, manual credits added, an earlier attempt failed) gets picked up here.
+  await sweepAllGuilds(client);
 }
 
 module.exports = {

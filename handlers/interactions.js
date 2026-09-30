@@ -11,6 +11,7 @@ const {
 } = require('../models');
 const { publishLeaderboard } = require('./leaderboard');
 const { unmuteMember } = require('./moderation');
+const { getTiers, sweepGuild } = require('./inviteAuto');
 
 const state = new Map();
 function getState(userId) { return state.get(userId) || {}; }
@@ -30,17 +31,6 @@ async function safeReply(interaction, options) {
 async function resolveMember(interaction) {
   if (interaction.member && interaction.member.roles) return interaction.member;
   try { return await interaction.guild.members.fetch(interaction.user.id); } catch (_) { return null; }
-}
-
-async function getTiers(guildId) {
-  const config = await InviteTierConfig.findOne({ guildId });
-  if (config?.tiers?.length) return config.tiers;
-  return [
-    { credits: 20, reward: '$3' },
-    { credits: 50, reward: '$8' },
-    { credits: 100, reward: '$18' },
-    { credits: 200, reward: '$40' },
-  ];
 }
 
 async function createInviteTicket(interaction, client, credits, reward, choice, userId) {
@@ -200,8 +190,9 @@ async function handleInteraction(interaction, client) {
 
     const periodNoun = ticket.type === 'chat_weekly' ? 'Weekly' : 'Monthly';
     const heading = ticket.place ? `${placeLabel(ticket.place)} ${periodNoun}` : periodNoun;
+    const embedTitle = ticket.type === 'invite' ? `🎁 Invite Reward Ticket — ${ticketId}` : `${heading} Chat Reward — ${ticketId}`;
     const embed = new EmbedBuilder()
-      .setTitle(`${heading} Chat Reward — ${ticketId}`)
+      .setTitle(embedTitle)
       .setColor('#F5A623')
       .setDescription(`<@${userId}> chose **${choice === 'nitro' ? 'Discord Nitro' : 'USDT'}**.\n\n**Reward:** ${ticket.rewardLabel}\n\nStaff: please send the reward, then mark this ticket as paid.`)
       .setTimestamp();
@@ -501,6 +492,8 @@ async function handleInteraction(interaction, client) {
     if (!tiers.length) return safeReply(interaction, { content: '❌ Could not parse any valid tiers. Use the format `credits:reward`, one per line.' });
 
     await InviteTierConfig.findOneAndUpdate({ guildId }, { guildId, tiers }, { upsert: true });
+    // New tiers apply immediately: anyone already at a tier gets their ticket now.
+    sweepGuild(client, guildId).catch(e => console.error('[Auto Ticket Sweep]', e.message));
     return safeReply(interaction, { content: `✅ Saved ${tiers.length} invite credit tier(s):\n${tiers.map(t => `• **${t.credits}** credits → **${t.reward}**`).join('\n')}` });
   }
 
@@ -589,6 +582,7 @@ async function handleInteraction(interaction, client) {
       );
       results.push(`✅ <@${targetId}> +${credits} credits`);
     }
+    sweepGuild(client, guildId).catch(e => console.error('[Auto Ticket Sweep]', e.message));
     return safeReply(interaction, { content: `**Bulk credit update:**\n${results.join('\n')}` });
   }
 
