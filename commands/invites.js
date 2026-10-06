@@ -1,5 +1,5 @@
 const { SlashCommandBuilder } = require('discord.js');
-const { buildInviteEmbed } = require('./invite');
+const { buildInviteView } = require('./invite');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -10,7 +10,7 @@ module.exports = {
     await interaction.deferReply({ ephemeral: true });
     const target = interaction.options.getUser('user');
     if (target.bot) return interaction.editReply({ content: '❌ Bots do not have invites.' });
-    const embed = await buildInviteEmbed(interaction.guild.id, target);
-    return interaction.editReply({ embeds: [embed] });
+    const view = await buildInviteView(interaction.guild.id, target, false);
+    return interaction.editReply(view);
   }
 };

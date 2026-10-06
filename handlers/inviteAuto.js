@@ -69,71 +69,33 @@ async function openInviteTicket(client, guild, userId, credits, reward, choice =
   return { ticketId, channel };
 }
 
-// Checks ONE user against the CURRENT tiers. While their available credits reach
-// a tier, it reserves those credits and opens a ticket. Highest reachable tier first.
-// The reservation is a single atomic DB update, so two checks running at the same
-// time can never reserve the same credits twice.
-async function autoOpenForUser(client, guild, userId, tiers) {
-  let opened = 0;
-  const sorted = [...(tiers || await getTiers(guild.id))].sort((a, b) => b.credits - a.credits);
+// User clicked "Open Ticket" for one tier. Re-checks against the CURRENT tiers and
+// their CURRENT credits, then reserves exactly that tier's credits (atomic, so a
+// double click or two devices can never spend the same credits twice) and opens
+// the ticket. Leftover credits stay with the user.
+async function claimInviteTier(client, guild, userId, credits) {
+  const tiers = await getTiers(guild.id);
+  const tier = tiers.find(t => t.credits === credits);
+  if (!tier) return { ok: false, reason: 'That tier no longer exists. Run /invite again to see the current tiers.' };
 
-  for (let guard = 0; guard < 10; guard++) {
-    const doc = await UserInvite.findOne({ guildId: guild.id, userId });
-    if (!doc) break;
-    const available = (doc.grantedCredits || 0) - (doc.reservedCredits || 0) - (doc.consumedCredits || 0);
-    const tier = sorted.find(t => t.credits > 0 && available >= t.credits);
-    if (!tier) break;
+  const reserved = await UserInvite.findOneAndUpdate(
+    {
+      guildId: guild.id, userId,
+      $expr: { $gte: [{ $subtract: ['$grantedCredits', { $add: ['$reservedCredits', '$consumedCredits'] }] }, credits] },
+    },
+    { $inc: { reservedCredits: credits }, $set: { updatedAt: new Date() } },
+    { new: true }
+  );
+  if (!reserved) return { ok: false, reason: `You no longer have **${credits}** available invites for this reward.` };
 
-    const reserved = await UserInvite.findOneAndUpdate(
-      {
-        guildId: guild.id, userId,
-        $expr: { $gte: [{ $subtract: ['$grantedCredits', { $add: ['$reservedCredits', '$consumedCredits'] }] }, tier.credits] },
-      },
-      { $inc: { reservedCredits: tier.credits }, $set: { updatedAt: new Date() } },
-      { new: true }
-    );
-    if (!reserved) break; // someone else got there first, or credits changed
-
-    try {
-      await openInviteTicket(client, guild, userId, tier.credits, tier.reward, null);
-      opened++;
-    } catch (e) {
-      // Ticket failed (permissions, deleted category...). Give the credits back so
-      // nothing is lost, the next check will retry.
-      await UserInvite.updateOne({ guildId: guild.id, userId }, { $inc: { reservedCredits: -tier.credits } });
-      console.error('[Auto Ticket] could not open ticket:', e.message);
-      break;
-    }
-  }
-  return opened;
-}
-
-// Checks everyone in a guild who has spare credits. Used after config changes
-// and on the regular timer.
-async function sweepGuild(client, guildId) {
-  const guild = client.guilds.cache.get(guildId);
-  if (!guild) return 0;
-  const config = await ServerConfig.findOne({ guildId });
-  if (config?.inviteRewardsEnabled === false) return 0;
-
-  const tiers = await getTiers(guildId);
-  const lowest = Math.min(...tiers.map(t => t.credits).filter(c => c > 0));
-  if (!Number.isFinite(lowest)) return 0;
-
-  const docs = await UserInvite.find({
-    guildId,
-    $expr: { $gte: [{ $subtract: ['$grantedCredits', { $add: ['$reservedCredits', '$consumedCredits'] }] }, lowest] },
-  }).select('userId');
-
-  let total = 0;
-  for (const d of docs) total += await autoOpenForUser(client, guild, d.userId, tiers);
-  return total;
-}
-
-async function sweepAllGuilds(client) {
-  for (const guild of client.guilds.cache.values()) {
-    try { await sweepGuild(client, guild.id); } catch (e) { console.error('[Auto Ticket Sweep]', e.message); }
+  try {
+    const { channel } = await openInviteTicket(client, guild, userId, credits, tier.reward, null);
+    return { ok: true, channel, tier };
+  } catch (e) {
+    await UserInvite.updateOne({ guildId: guild.id, userId }, { $inc: { reservedCredits: -credits } });
+    console.error('[Invite Ticket]', e.message);
+    return { ok: false, reason: 'Could not open the ticket. Please tell staff (check the ticket category and bot permissions).' };
   }
 }
 
-module.exports = { getTiers, openInviteTicket, autoOpenForUser, sweepGuild, sweepAllGuilds };
+module.exports = { getTiers, openInviteTicket, claimInviteTier };

@@ -11,7 +11,7 @@ const {
 } = require('../models');
 const { publishLeaderboard } = require('./leaderboard');
 const { unmuteMember } = require('./moderation');
-const { getTiers, sweepGuild } = require('./inviteAuto');
+const { getTiers, claimInviteTier } = require('./inviteAuto');
 
 const state = new Map();
 function getState(userId) { return state.get(userId) || {}; }
@@ -127,6 +127,21 @@ async function handleInteraction(interaction, client) {
     return safeReply(interaction, {
       content: '🏆 Chat rewards are awarded **automatically** — the top 3 chatters each week and month are announced and given a private ticket, no application needed.\n\nUse **📊 Check Your Progress** to see exactly where you rank.',
     });
+  }
+
+  // ── /invite "Open Ticket" button: user opens a reward ticket by their own choice ──
+  if (id.startsWith('invite_open_')) {
+    await interaction.deferUpdate().catch(() => {});
+    if (!await inviteRewardsEnabled(guildId)) {
+      return safeReply(interaction, { content: '🔌 Invite rewards are currently turned **off** by an admin. Please check back later.' });
+    }
+    const credits = parseInt(id.replace('invite_open_', ''), 10);
+    const result = await claimInviteTier(client, interaction.guild, userId, credits);
+    const { buildInviteView } = require('../commands/invite');
+    const view = await buildInviteView(guildId, interaction.user, true);
+    await interaction.editReply(view).catch(() => {});
+    if (!result.ok) return interaction.followUp({ content: `❌ ${result.reason}`, ephemeral: true }).catch(() => {});
+    return interaction.followUp({ content: `✅ Your **${result.tier.reward}** ticket is open: ${result.channel}\nYour remaining credits are shown above.`, ephemeral: true }).catch(() => {});
   }
 
   // ── INVITE CLAIM: tier selected → ask Nitro or USDT ──────────────────────────
@@ -492,8 +507,6 @@ async function handleInteraction(interaction, client) {
     if (!tiers.length) return safeReply(interaction, { content: '❌ Could not parse any valid tiers. Use the format `credits:reward`, one per line.' });
 
     await InviteTierConfig.findOneAndUpdate({ guildId }, { guildId, tiers }, { upsert: true });
-    // New tiers apply immediately: anyone already at a tier gets their ticket now.
-    sweepGuild(client, guildId).catch(e => console.error('[Auto Ticket Sweep]', e.message));
     return safeReply(interaction, { content: `✅ Saved ${tiers.length} invite credit tier(s):\n${tiers.map(t => `• **${t.credits}** credits → **${t.reward}**`).join('\n')}` });
   }
 
@@ -582,7 +595,6 @@ async function handleInteraction(interaction, client) {
       );
       results.push(`✅ <@${targetId}> +${credits} credits`);
     }
-    sweepGuild(client, guildId).catch(e => console.error('[Auto Ticket Sweep]', e.message));
     return safeReply(interaction, { content: `**Bulk credit update:**\n${results.join('\n')}` });
   }
 
